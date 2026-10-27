@@ -204,6 +204,9 @@ This is a Leadfox-managed project.
 
 Read the relevant control files and documentation before making changes.
 For the planning workflow, read docs/agent-planning.md.
+When the project has no confirmed requirements, ask the developer whether to
+begin the agent-led planning process. Do not assume the developer knows the
+planning prompt.
 Gather requirements and propose an architecture before implementing services.
 After requirements are confirmed, run leadfox plan from the project root and
 review its proposed architecture plan with the developer.
@@ -269,13 +272,19 @@ release processes here.
 		"docs/agent-planning.md": `# Agent planning workflow
 
 1. Read AGENTS.md and the current control files.
-2. Gather requirements from the developer.
-3. Confirm the requirements with the developer.
-4. Record confirmed requirements under control/requirements/.
-5. Run leadfox plan from the project root.
-6. Review the generated architecture plan with the developer.
-7. Do not implement services or provision infrastructure until the plan is
+2. Determine the current project state.
+3. If no confirmed requirements exist, ask the developer whether to begin the
+   agent-led planning process.
+4. If the developer agrees, gather and summarize the requirements.
+5. Confirm the requirements with the developer.
+6. Record confirmed requirements under control/requirements/.
+7. Run leadfox plan from the project root.
+8. Review the generated architecture plan with the developer.
+9. Do not implement services or provision infrastructure until the plan is
    explicitly approved.
+
+If requirements or a plan already exist, offer to resume the appropriate
+stage instead of restarting the planning process.
 `,
 	}
 }
