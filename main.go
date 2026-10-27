@@ -1,0 +1,252 @@
+package main
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+)
+
+const helpText = `Leadfox assists with the deployment of your project.
+
+Usage:
+  leadfox [command]
+
+Commands:
+  init <name>       Create a new Leadfox project
+  help              Show this help message
+
+Options:
+  -h, --help        Show this help message
+
+Init options:
+  -p, --parent DIR  Create the project under DIR
+  -n, --dry-run     Show planned changes without creating files
+`
+
+const initHelpText = `Create a new Leadfox project.
+
+Usage:
+  leadfox init <project-name> [options]
+
+Options:
+  -p, --parent DIR  Create the project under DIR
+  -n, --dry-run     Show planned changes without creating files
+  -h, --help        Show this help message
+`
+
+type initOptions struct {
+	name     string
+	parent   string
+	dryRun   bool
+	showHelp bool
+}
+
+func main() {
+	if len(os.Args) <= 1 {
+		fmt.Println("I am here to assist you in the deployment of your project!")
+		return
+	}
+
+	switch os.Args[1] {
+	case "-h", "--help", "help":
+		fmt.Print(helpText)
+	case "init":
+		if err := runInit(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(1)
+		}
+	default:
+		fmt.Fprintf(os.Stderr, "Error: unknown command %q\n\n%s", os.Args[1], helpText)
+		os.Exit(1)
+	}
+}
+
+func runInit(args []string) error {
+	options, err := parseInitOptions(args)
+	if err != nil {
+		return err
+	}
+	if options.showHelp {
+		fmt.Print(initHelpText)
+		return nil
+	}
+	if options.name == "" {
+		return errors.New("a project name is required; use 'leadfox init --help' for usage")
+	}
+	if filepath.Base(options.name) != options.name || options.name == "." || options.name == ".." {
+		return fmt.Errorf("invalid project name %q; use a single directory name", options.name)
+	}
+
+	parent, err := filepath.Abs(options.parent)
+	if err != nil {
+		return fmt.Errorf("resolve parent directory: %w", err)
+	}
+	target := filepath.Join(parent, options.name)
+
+	if info, statErr := os.Stat(target); statErr == nil {
+		if !info.IsDir() {
+			return fmt.Errorf("target exists and is not a directory: %s", target)
+		}
+		entries, readErr := os.ReadDir(target)
+		if readErr != nil {
+			return fmt.Errorf("inspect existing target: %w", readErr)
+		}
+		if len(entries) > 0 {
+			return fmt.Errorf("target directory is not empty: %s", target)
+		}
+	} else if !os.IsNotExist(statErr) {
+		return fmt.Errorf("inspect target: %w", statErr)
+	}
+
+	files := projectFiles(options.name)
+	directories := []string{
+		"control/settings",
+		"services",
+		"tests",
+		"infrastructure/terraform",
+		"contracts",
+		"docs",
+	}
+
+	if options.dryRun {
+		fmt.Printf("Would create project: %s\n", target)
+		for _, directory := range directories {
+			fmt.Printf("  directory %s\n", filepath.Join(target, directory))
+		}
+		for path := range files {
+			fmt.Printf("  file %s\n", filepath.Join(target, path))
+		}
+		fmt.Printf("  symlink %s -> AGENTS.md\n", filepath.Join(target, "CLAUDE.md"))
+		return nil
+	}
+
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		return fmt.Errorf("create project directory: %w", err)
+	}
+	for _, directory := range directories {
+		if err := os.MkdirAll(filepath.Join(target, directory), 0o755); err != nil {
+			return fmt.Errorf("create directory %s: %w", directory, err)
+		}
+	}
+	for path, content := range files {
+		fullPath := filepath.Join(target, path)
+		if err := os.WriteFile(fullPath, []byte(content), 0o644); err != nil {
+			return fmt.Errorf("write %s: %w", path, err)
+		}
+	}
+	if err := os.Symlink("AGENTS.md", filepath.Join(target, "CLAUDE.md")); err != nil {
+		return fmt.Errorf("create CLAUDE.md symlink: %w", err)
+	}
+
+	fmt.Printf("Created Leadfox project: %s\n", target)
+	fmt.Printf("Next steps:\n  cd %s\n  start your preferred planning agent\n", target)
+	return nil
+}
+
+func parseInitOptions(args []string) (initOptions, error) {
+	options := initOptions{parent: "."}
+	for index := 0; index < len(args); index++ {
+		arg := args[index]
+		switch arg {
+		case "-h", "--help":
+			options.showHelp = true
+		case "-n", "--dry-run":
+			options.dryRun = true
+		case "-p", "--parent":
+			if index+1 >= len(args) {
+				return options, fmt.Errorf("%s requires a directory", arg)
+			}
+			index++
+			options.parent = args[index]
+		default:
+			if len(arg) > 0 && arg[0] == '-' {
+				return options, fmt.Errorf("unknown init option %q", arg)
+			}
+			if options.name != "" {
+				return options, errors.New("only one project name may be provided")
+			}
+			options.name = arg
+		}
+	}
+	return options, nil
+}
+
+func projectFiles(projectName string) map[string]string {
+	return map[string]string{
+		"README.md": fmt.Sprintf(`# %s
+
+This project was initialized by Leadfox.
+
+Next step: review the project structure and use a planning agent to gather
+requirements and propose an architecture before implementation begins.
+`, projectName),
+		"AGENTS.md": `# Agent instructions
+
+This is a Leadfox-managed project.
+
+## Repository structure
+
+- control/: project metadata, pins, gates, and environment settings
+- services/: application services
+- tests/: unit, integration, and end-to-end tests
+- infrastructure/terraform/: infrastructure definitions
+- contracts/: service and external-system contracts
+- docs/: evolving architecture and process documentation
+
+Read the relevant control files and documentation before making changes.
+Gather requirements and propose an architecture before implementing services.
+Do not commit secrets or modify unrelated services.
+`,
+		"control/project.yaml": fmt.Sprintf(`project:
+  name: %s
+  version: 1
+
+services: []
+external_dependencies: []
+environments:
+  - local
+  - ephemeral
+  - production
+entry_points: []
+data_stores: []
+`, projectName),
+		"control/pins.yaml": `# Exact artifact and definition versions used by a candidate.
+# Service-owned dependency locks remain with their service.
+pins: []
+`,
+		"control/gates.yaml": `# Checks required at each stage of the project lifecycle.
+gates: []
+`,
+		"control/settings/README.md": `# Settings
+
+Environment-specific, non-secret settings belong here. Keep secrets as
+references to an appropriate secret store rather than committing values.
+`,
+		"services/README.md": `# Services
+
+Add one directory per application service. Each service should document its
+runtime type, dependencies, interfaces, build method, and tests.
+`,
+		"tests/README.md": `# Tests
+
+Place unit, integration, contract, and end-to-end tests here as the project
+architecture is defined.
+`,
+		"infrastructure/terraform/README.md": `# Terraform
+
+Infrastructure definitions will be added here when the project architecture
+has been approved.
+`,
+		"contracts/README.md": `# Contracts
+
+Document service, data, and external-system contracts here. Contracts define
+interactions; they do not replace service implementations.
+`,
+		"docs/README.md": `# Documentation
+
+Record approved architecture and evolving development, environment, gate, and
+release processes here.
+`,
+	}
+}
