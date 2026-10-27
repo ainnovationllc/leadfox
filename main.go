@@ -14,6 +14,7 @@ Usage:
 
 Commands:
   init <name>       Create a new Leadfox project
+  plan              Create an architecture plan from requirements
   help              Show this help message
 
 Options:
@@ -53,6 +54,11 @@ func main() {
 		fmt.Print(helpText)
 	case "init":
 		if err := runInit(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(1)
+		}
+	case "plan":
+		if err := runPlan(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "Error:", err)
 			os.Exit(1)
 		}
@@ -102,6 +108,7 @@ func runInit(args []string) error {
 	files := projectFiles(options.name)
 	directories := []string{
 		"control/settings",
+		"control/requirements",
 		"services",
 		"tests",
 		"infrastructure/terraform",
@@ -188,6 +195,7 @@ This is a Leadfox-managed project.
 ## Repository structure
 
 - control/: project metadata, pins, gates, and environment settings
+- control/requirements/: confirmed functional requirements
 - services/: application services
 - tests/: unit, integration, and end-to-end tests
 - infrastructure/terraform/: infrastructure definitions
@@ -195,7 +203,10 @@ This is a Leadfox-managed project.
 - docs/: evolving architecture and process documentation
 
 Read the relevant control files and documentation before making changes.
+For the planning workflow, read docs/agent-planning.md.
 Gather requirements and propose an architecture before implementing services.
+After requirements are confirmed, run leadfox plan from the project root and
+review its proposed architecture plan with the developer.
 Do not commit secrets or modify unrelated services.
 `,
 		"control/project.yaml": fmt.Sprintf(`project:
@@ -223,6 +234,13 @@ gates: []
 Environment-specific, non-secret settings belong here. Keep secrets as
 references to an appropriate secret store rather than committing values.
 `,
+		"control/requirements/README.md": `# Requirements
+
+Add one Markdown document per requirement. Use a stable requirement ID in the
+filename and confirm the requirement with the developer before planning.
+
+The planning command reads active and confirmed documents from this directory.
+`,
 		"services/README.md": `# Services
 
 Add one directory per application service. Each service should document its
@@ -247,6 +265,17 @@ interactions; they do not replace service implementations.
 
 Record approved architecture and evolving development, environment, gate, and
 release processes here.
+`,
+		"docs/agent-planning.md": `# Agent planning workflow
+
+1. Read AGENTS.md and the current control files.
+2. Gather requirements from the developer.
+3. Confirm the requirements with the developer.
+4. Record confirmed requirements under control/requirements/.
+5. Run leadfox plan from the project root.
+6. Review the generated architecture plan with the developer.
+7. Do not implement services or provision infrastructure until the plan is
+   explicitly approved.
 `,
 	}
 }
