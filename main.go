@@ -109,6 +109,8 @@ func runInit(args []string) error {
 	directories := []string{
 		"control/settings",
 		"control/requirements",
+		"control/jobs",
+		"control/handoffs",
 		"services",
 		"tests",
 		"infrastructure/terraform",
@@ -188,6 +190,9 @@ This project was initialized by Leadfox.
 Next step: review the project structure and use a planning agent to gather
 requirements and propose an architecture before implementation begins.
 `, projectName),
+		".gitignore": `# Local certificates, credentials, and runtime state.
+.local/
+`,
 		"AGENTS.md": `# Agent instructions
 
 This is a Leadfox-managed project.
@@ -241,12 +246,67 @@ gates: []
 Environment-specific, non-secret settings belong here. Keep secrets as
 references to an appropriate secret store rather than committing values.
 `,
+		"control/settings/technology.yaml": `# Project technology policy. Agents may propose deviations with a rationale.
+technology:
+  backend:
+    preferred: go
+    alternatives:
+      - python
+    selection_rule: use Python when it materially improves delivery and testing without unacceptable loss of performance, scalability, or operational simplicity
+  frontend:
+    preferred:
+      - typescript
+      - react
+      - vite
+      - tailwindcss
+  scripting:
+    preferred:
+      - bash
+`,
+		"control/settings/environments.yaml": fmt.Sprintf(`environments:
+  local:
+    runtime: local
+    tls:
+      enabled: true
+      provider: mkcert
+      hosts:
+        - localhost
+        - %s.test
+      certificate_directory: .local/tls
+    secret_directory: .local/secrets
+  ephemeral:
+    runtime: isolated
+    tls:
+      enabled: true
+      provider: environment-managed
+  production:
+    runtime: approved
+    tls:
+      enabled: true
+      provider: managed-certificate
+`, projectName),
 		"control/requirements/README.md": `# Requirements
 
 Add one Markdown document per requirement. Use a stable requirement ID in the
 filename and confirm the requirement with the developer before planning.
 
 The planning command reads active and confirmed documents from this directory.
+`,
+		"control/jobs/README.md": `# Agent jobs
+
+Store approved job packets here. A job packet bounds delegated work; it does
+not grant merge or deployment approval.
+
+Each job should identify its role, requirement IDs, allowed paths, inputs,
+expected outputs, checks, gates, stop conditions, and handoff format.
+`,
+		"control/handoffs/README.md": `# Agent handoffs
+
+Store handoff records here when a delegated job returns. Control reviews the
+changed paths and evidence against the job packet before accepting the work.
+
+An accepted handoff is required before dependent work, pin changes, promotion,
+or merge approval.
 `,
 		"services/README.md": `# Services
 
@@ -373,6 +433,9 @@ parallelization possible.
 13. Review each handoff against its job packet and run the required gate before
     assigning dependent work. Do not treat an idle agent or a claimed
     completion as approval.
+14. Use the project technology policy and environment settings when creating
+    jobs. Local TLS may use mkcert; never commit generated certificates,
+    private keys, or local secrets.
 
 If requirements or a plan already exist, offer to resume the appropriate
 stage instead of restarting the planning process.
