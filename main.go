@@ -210,6 +210,9 @@ planning prompt.
 Gather requirements and propose an architecture before implementing services.
 After requirements are confirmed, run leadfox plan from the project root and
 review its proposed architecture plan with the developer.
+Before implementation, reconcile the approved project model: service names,
+plan approval status, initial contracts, initial gates, environment settings,
+and secret references. Show the resulting change summary before writing code.
 Do not commit secrets or modify unrelated services.
 `,
 		"control/project.yaml": fmt.Sprintf(`project:
@@ -280,8 +283,15 @@ release processes here.
 6. Record confirmed requirements under control/requirements/.
 7. Run leadfox plan from the project root.
 8. Review the generated architecture plan with the developer.
-9. Do not implement services or provision infrastructure until the plan is
-   explicitly approved.
+9. Before implementation, reconcile the approved model:
+   - resolve service-name mismatches;
+   - mark the architecture plan approved;
+   - add the initial contracts;
+   - define the first gates;
+   - confirm non-secret settings and secret references;
+   - show the proposed change summary.
+10. Do not implement services or provision infrastructure until the plan and
+    reconciliation changes are explicitly approved.
 
 If requirements or a plan already exist, offer to resume the appropriate
 stage instead of restarting the planning process.
