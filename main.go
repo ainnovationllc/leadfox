@@ -203,7 +203,8 @@ This is a Leadfox-managed project.
 - docs/: evolving architecture and process documentation
 
 Read the relevant control files and documentation before making changes.
-For the planning workflow, read docs/agent-planning.md.
+For the planning workflow, read docs/agent-planning.md. For role boundaries,
+job packets, and handoffs, read docs/agent-roles.md.
 When the project has no confirmed requirements, ask the developer whether to
 begin the agent-led planning process. Do not assume the developer knows the
 planning prompt.
@@ -272,6 +273,78 @@ interactions; they do not replace service implementations.
 Record approved architecture and evolving development, environment, gate, and
 release processes here.
 `,
+		"docs/agent-roles.md": `# Agent roles and handoffs
+
+Leadfox uses logical roles. A role may be performed by a separate agent, by a
+human, or by the same agent performing another role. The role names describe
+responsibilities and review boundaries; they do not require a particular
+runtime or vendor.
+
+## Control Agent
+
+The Control Agent coordinates the project lifecycle. It gathers and confirms
+requirements, maintains the project model, prepares architecture plans,
+creates bounded job packets, assigns work, and coordinates reviews. It owns
+pins, gates, approvals, and the decision to advance work. It should not accept
+a service agent's claim of completion without inspecting the declared outputs
+and running the applicable gates.
+
+## Service Agent
+
+The Service Agent implements one application service within its assigned
+directory. It owns service code, service configuration interfaces, service
+tests, migrations required by that service, and service-level contracts. It
+must document assumptions, expose the declared entry points, run its local
+checks, and return a handoff summary. It does not change unrelated services or
+shared control decisions.
+
+## Integration Agent
+
+The Integration Agent assembles the runnable environment around services. It
+owns local or ephemeral composition, test doubles for external systems,
+service wiring, integration and end-to-end tests, and the integration gate. It
+may execute service migrations against an isolated database, but it does not
+silently redefine the service's schema or application behavior.
+
+## Infrastructure Agent
+
+The Infrastructure Agent maps the approved environment model to deployable
+infrastructure, such as Terraform, Cloud Run, Cloud SQL, buckets, networking,
+and secret references. It owns infrastructure plans and environment
+provisioning checks. It does not invent application requirements or modify
+service behavior to make infrastructure pass.
+
+## Contract Agent (optional)
+
+When useful, a Contract Agent maintains API, event, data, and external-system
+contracts and their compatibility tests. This role can be combined with the
+Service or Integration Agent for a small project.
+
+## Job packet
+
+Every delegated job should state:
+
+- objective and requirement IDs;
+- assigned role and responsible paths;
+- allowed files or directories and explicitly excluded areas;
+- input artifacts, pins, and settings references;
+- expected outputs and acceptance checks;
+- required gate(s), stop conditions, and unresolved questions;
+- handoff format and the agent's final status.
+
+## Handoff and review
+
+An agent returns the changed paths, tests and gates run, relevant output,
+assumptions, unresolved items, and a recommended next step. Control reviews
+the diff and artifacts, verifies that the work stayed within the job packet,
+and runs or delegates the applicable gates. A successful handoff is not an
+approval. Control explicitly accepts the result before assigning dependent
+work or allowing a merge, pin update, or environment promotion.
+
+For a small project, use these boundaries even when one agent performs all
+roles. The separation preserves a reviewable process and makes later
+parallelization possible.
+`,
 		"docs/agent-planning.md": `# Agent planning workflow
 
 1. Read AGENTS.md and the current control files.
@@ -292,6 +365,14 @@ release processes here.
    - show the proposed change summary.
 10. Do not implement services or provision infrastructure until the plan and
     reconciliation changes are explicitly approved.
+11. Read docs/agent-roles.md and divide the approved build plan into bounded
+    job packets. Start with the smallest independently reviewable step.
+12. Assign service implementation, environment integration, and infrastructure
+    provisioning to the appropriate logical role. One agent may perform more
+    than one role, but the boundaries and handoffs still apply.
+13. Review each handoff against its job packet and run the required gate before
+    assigning dependent work. Do not treat an idle agent or a claimed
+    completion as approval.
 
 If requirements or a plan already exist, offer to resume the appropriate
 stage instead of restarting the planning process.
