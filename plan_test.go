@@ -24,7 +24,7 @@ func TestBuildPlanForLTIRegistration(t *testing.T) {
 		body:   "The registration service receives LTI registration requests from the LMS and stores them in PostgreSQL.",
 	}}
 
-	result := buildPlan("lti-demo", requirements)
+	result := buildPlan("lti-demo", requirements, []string{"PostgreSQL registration store"})
 
 	if !contains(result.services, "registration-service") {
 		t.Fatal("expected registration service")
@@ -37,6 +37,50 @@ func TestBuildPlanForLTIRegistration(t *testing.T) {
 	}
 	if len(result.unresolved) != 0 {
 		t.Fatalf("unexpected unresolved items: %v", result.unresolved)
+	}
+}
+
+func TestBuildPlanExcludesDeferredRequirements(t *testing.T) {
+	requirements := []requirement{{
+		id:     "FR-001-registration",
+		title:  "Registration",
+		status: "active",
+		body:   "The service receives LTI registration requests from the LMS.",
+	}, {
+		id:     "FR-003-login-and-token-state",
+		title:  "Login and token state",
+		status: "deferred",
+		body:   "Persist login and token state in PostgreSQL.",
+	}}
+
+	result := buildPlan("lti-demo", requirements, nil)
+
+	if len(result.deferred) != 1 || result.deferred[0] != "FR-003-login-and-token-state" {
+		t.Fatalf("expected deferred requirement, got %v", result.deferred)
+	}
+	if len(result.unresolved) != 0 {
+		t.Fatalf("deferred requirement was reported as unresolved: %v", result.unresolved)
+	}
+	if len(result.dataStores) != 0 {
+		t.Fatalf("deferred requirement introduced a data store: %v", result.dataStores)
+	}
+}
+
+func TestBuildPlanReportsDataStoreConflict(t *testing.T) {
+	requirements := []requirement{{
+		id:     "FR-001-registration",
+		title:  "Registration",
+		status: "active",
+		body:   "The service stores registration information.",
+	}}
+
+	result := buildPlan("lti-demo", requirements, nil)
+
+	if len(result.dataStores) != 0 {
+		t.Fatalf("unexpected proposed data store: %v", result.dataStores)
+	}
+	if len(result.conflicts) != 1 {
+		t.Fatalf("expected one data-store conflict, got %v", result.conflicts)
 	}
 }
 

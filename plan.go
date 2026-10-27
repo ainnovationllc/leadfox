@@ -33,14 +33,15 @@ type requirement struct {
 }
 
 type planResult struct {
-	projectName      string
-	requirements     []requirement
-	services         []string
-	dependencies     []string
-	dataStores       []string
-	entryPoints      []string
-	unresolved       []string
-	architectureText string
+	projectName  string
+	requirements []requirement
+	services     []string
+	dependencies []string
+	dataStores   []string
+	entryPoints  []string
+	unresolved   []string
+	deferred     []string
+	conflicts    []string
 }
 
 func runPlan(args []string) error {
@@ -64,7 +65,8 @@ func runPlan(args []string) error {
 		return fmt.Errorf("inspect project metadata: %w", err)
 	}
 
-	projectName, err := readProjectName(filepath.Join(root, "control", "project.yaml"))
+	projectPath := filepath.Join(root, "control", "project.yaml")
+	projectName, approvedDataStores, err := readProjectModel(projectPath)
 	if err != nil {
 		return err
 	}
@@ -72,7 +74,7 @@ func runPlan(args []string) error {
 	if err != nil {
 		return err
 	}
-	result := buildPlan(projectName, requirements)
+	result := buildPlan(projectName, requirements, approvedDataStores)
 	markdown := renderPlanMarkdown(result)
 
 	if options.dryRun {
@@ -93,6 +95,9 @@ func runPlan(args []string) error {
 	if len(result.unresolved) > 0 {
 		fmt.Printf("Unresolved items: %d\n", len(result.unresolved))
 	}
+	if len(result.conflicts) > 0 {
+		fmt.Printf("Planner conflicts: %d\n", len(result.conflicts))
+	}
 	return nil
 }
 
@@ -112,21 +117,50 @@ func parsePlanOptions(args []string) (planOptions, error) {
 }
 
 func readProjectName(path string) (string, error) {
+	name, _, err := readProjectModel(path)
+	return name, err
+}
+
+func readProjectModel(path string) (string, []string, error) {
 	content, err := os.ReadFile(path)
 	if err != nil {
-		return "", fmt.Errorf("read project metadata: %w", err)
+		return "", nil, fmt.Errorf("read project metadata: %w", err)
 	}
+	var projectName string
+	var dataStores []string
+	inDataStores := false
 	for _, line := range strings.Split(string(content), "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "name:") {
 			name := strings.TrimSpace(strings.TrimPrefix(trimmed, "name:"))
 			name = strings.Trim(name, "\"'")
 			if name != "" {
-				return name, nil
+				projectName = name
+			}
+		}
+		if strings.HasPrefix(trimmed, "data_stores:") {
+			inDataStores = true
+			continue
+		}
+		if inDataStores {
+			if trimmed == "" {
+				continue
+			}
+			if !strings.HasPrefix(trimmed, "-") {
+				inDataStores = false
+				continue
+			}
+			store := strings.TrimSpace(strings.TrimPrefix(trimmed, "-"))
+			store = strings.Trim(store, "\"'")
+			if store != "" {
+				dataStores = append(dataStores, store)
 			}
 		}
 	}
-	return "", errors.New("project metadata does not contain project.name")
+	if projectName == "" {
+		return "", nil, errors.New("project metadata does not contain project.name")
+	}
+	return projectName, dataStores, nil
 }
 
 func readRequirements(directory string) ([]requirement, error) {
@@ -177,15 +211,21 @@ func parseRequirement(filename, content string) requirement {
 	return result
 }
 
-func buildPlan(projectName string, requirements []requirement) planResult {
-	result := planResult{projectName: projectName, requirements: requirements}
+func buildPlan(projectName string, requirements []requirement, approvedDataStores []string) planResult {
+	result := planResult{projectName: projectName, requirements: requirements, dataStores: append([]string(nil), approvedDataStores...)}
 	var combined strings.Builder
 	for _, item := range requirements {
+		status := strings.ToLower(item.status)
+		if status == "deferred" {
+			result.deferred = append(result.deferred, item.id)
+			continue
+		}
+		if status != "active" && status != "confirmed" {
+			result.unresolved = append(result.unresolved, fmt.Sprintf("%s has status %q and needs confirmation", item.id, item.status))
+			continue
+		}
 		combined.WriteString(strings.ToLower(item.body))
 		combined.WriteString("\n")
-		if item.status != "active" && item.status != "confirmed" {
-			result.unresolved = append(result.unresolved, fmt.Sprintf("%s has status %q and needs confirmation", item.id, item.status))
-		}
 	}
 	text := combined.String()
 
@@ -197,7 +237,9 @@ func buildPlan(projectName string, requirements []requirement) planResult {
 		result.dependencies = append(result.dependencies, "external LMS platform")
 	}
 	if containsAny(text, "postgres", "postgresql", "database", "persistent", "store") {
-		result.dataStores = append(result.dataStores, "PostgreSQL registration store")
+		if len(approvedDataStores) == 0 {
+			result.conflicts = append(result.conflicts, "active requirements imply a data store, but the approved project model declares data_stores: []")
+		}
 	}
 	if containsAny(text, "health", "readiness", "telemetry", "metrics") {
 		result.entryPoints = append(result.entryPoints, "operational health and telemetry endpoints")
@@ -207,9 +249,6 @@ func buildPlan(projectName string, requirements []requirement) planResult {
 	}
 	if len(result.dependencies) == 0 {
 		result.unresolved = append(result.unresolved, "no external or runtime dependency was identified")
-	}
-	if len(result.dataStores) == 0 {
-		result.unresolved = append(result.unresolved, "no data-store requirement was identified")
 	}
 	return result
 }
@@ -240,6 +279,10 @@ func renderPlanMarkdown(result planResult) string {
 	writeList(&builder, result.dataStores)
 	builder.WriteString("\n## Proposed entry points\n\n")
 	writeList(&builder, result.entryPoints)
+	builder.WriteString("\n## Deferred requirements\n\n")
+	writeList(&builder, result.deferred)
+	builder.WriteString("\n## Planner conflicts\n\n")
+	writeList(&builder, result.conflicts)
 	builder.WriteString("\n## Environment mapping\n\n")
 	builder.WriteString("- Local: use local or emulated dependencies.\n- Ephemeral: use isolated, PR-specific dependencies and settings.\n- Production: use explicitly approved persistent dependencies and settings.\n")
 	builder.WriteString("\n## Unresolved items\n\n")
@@ -265,6 +308,10 @@ func renderPlanYAML(result planResult) string {
 	writeYAMLList(&builder, result.dataStores)
 	builder.WriteString("entry_points:\n")
 	writeYAMLList(&builder, result.entryPoints)
+	builder.WriteString("deferred_requirements:\n")
+	writeYAMLList(&builder, result.deferred)
+	builder.WriteString("conflicts:\n")
+	writeYAMLList(&builder, result.conflicts)
 	builder.WriteString("unresolved:\n")
 	writeYAMLList(&builder, result.unresolved)
 	return builder.String()
