@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 const planHelpText = `Create a deterministic architecture plan from project requirements.
@@ -17,6 +19,8 @@ Usage:
 Options:
   -n, --dry-run     Show the plan without writing plan files
   -h, --help        Show this help message
+
+The planner preserves approved project-model entries and reports new ideas as proposals.
 `
 
 type planOptions struct {
@@ -25,23 +29,47 @@ type planOptions struct {
 }
 
 type requirement struct {
-	id     string
-	title  string
-	status string
-	path   string
-	body   string
+	id          string
+	title       string
+	status      string
+	statusNote  string
+	statusError string
+	path        string
+	body        string
 }
 
-type planResult struct {
+type approvedModel struct {
 	projectName  string
-	requirements []requirement
 	services     []string
 	dependencies []string
 	dataStores   []string
 	entryPoints  []string
-	unresolved   []string
-	deferred     []string
-	conflicts    []string
+}
+
+type requirementTrace struct {
+	requirementID string
+	services      []string
+	dependencies  []string
+	dataStores    []string
+	entryPoints   []string
+}
+
+type planResult struct {
+	projectName          string
+	requirements         []requirement
+	services             []string
+	dependencies         []string
+	dataStores           []string
+	entryPoints          []string
+	proposedServices     []string
+	proposedDependencies []string
+	proposedDataStores   []string
+	proposedEntryPoints  []string
+	proposals            []string
+	traces               []requirementTrace
+	unresolved           []string
+	deferred             []string
+	conflicts            []string
 }
 
 func runPlan(args []string) error {
@@ -66,7 +94,7 @@ func runPlan(args []string) error {
 	}
 
 	projectPath := filepath.Join(root, "control", "project.yaml")
-	projectName, approvedDataStores, err := readProjectModel(projectPath)
+	model, err := readApprovedModel(projectPath)
 	if err != nil {
 		return err
 	}
@@ -74,7 +102,7 @@ func runPlan(args []string) error {
 	if err != nil {
 		return err
 	}
-	result := buildPlan(projectName, requirements, approvedDataStores)
+	result := buildPlanFromModel(model, requirements)
 	markdown := renderPlanMarkdown(result)
 
 	if options.dryRun {
@@ -122,45 +150,69 @@ func readProjectName(path string) (string, error) {
 }
 
 func readProjectModel(path string) (string, []string, error) {
+	model, err := readApprovedModel(path)
+	if err != nil {
+		return "", nil, err
+	}
+	return model.projectName, model.dataStores, nil
+}
+
+func readApprovedModel(path string) (approvedModel, error) {
 	content, err := os.ReadFile(path)
 	if err != nil {
-		return "", nil, fmt.Errorf("read project metadata: %w", err)
+		return approvedModel{}, fmt.Errorf("read project metadata: %w", err)
 	}
-	var projectName string
-	var dataStores []string
-	inDataStores := false
-	for _, line := range strings.Split(string(content), "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "name:") {
-			name := strings.TrimSpace(strings.TrimPrefix(trimmed, "name:"))
-			name = strings.Trim(name, "\"'")
-			if name != "" {
-				projectName = name
+	var document map[string]interface{}
+	if err := yaml.Unmarshal(content, &document); err != nil {
+		return approvedModel{}, fmt.Errorf("parse project metadata: %w", err)
+	}
+	project, _ := document["project"].(map[string]interface{})
+	model := approvedModel{
+		projectName:  nestedString(project, "name"),
+		services:     yamlStringList(document["services"]),
+		dependencies: yamlStringList(document["external_dependencies"]),
+		dataStores:   yamlStringList(document["data_stores"]),
+		entryPoints:  yamlStringList(document["entry_points"]),
+	}
+	if model.projectName == "" {
+		return approvedModel{}, errors.New("project metadata does not contain project.name")
+	}
+	return model, nil
+}
+
+func nestedString(values map[string]interface{}, key string) string {
+	if values == nil {
+		return ""
+	}
+	value, _ := values[key].(string)
+	return strings.TrimSpace(value)
+}
+
+func yamlStringList(value interface{}) []string {
+	var result []string
+	items, ok := value.([]interface{})
+	if !ok {
+		if single, ok := value.(string); ok && strings.TrimSpace(single) != "" {
+			return []string{strings.TrimSpace(single)}
+		}
+		return nil
+	}
+	for _, item := range items {
+		switch typed := item.(type) {
+		case string:
+			if strings.TrimSpace(typed) != "" {
+				result = appendUnique(result, strings.TrimSpace(typed))
+			}
+		case map[string]interface{}:
+			for _, key := range []string{"name", "id", "path", "route", "endpoint"} {
+				if text := nestedString(typed, key); text != "" {
+					result = appendUnique(result, text)
+					break
+				}
 			}
 		}
-		if strings.HasPrefix(trimmed, "data_stores:") {
-			inDataStores = true
-			continue
-		}
-		if inDataStores {
-			if trimmed == "" {
-				continue
-			}
-			if !strings.HasPrefix(trimmed, "-") {
-				inDataStores = false
-				continue
-			}
-			store := strings.TrimSpace(strings.TrimPrefix(trimmed, "-"))
-			store = strings.Trim(store, "\"'")
-			if store != "" {
-				dataStores = append(dataStores, store)
-			}
-		}
 	}
-	if projectName == "" {
-		return "", nil, errors.New("project metadata does not contain project.name")
-	}
-	return projectName, dataStores, nil
+	return result
 }
 
 func readRequirements(directory string) ([]requirement, error) {
@@ -182,7 +234,11 @@ func readRequirements(directory string) ([]requirement, error) {
 		if readErr != nil {
 			return nil, fmt.Errorf("read requirement %s: %w", entry.Name(), readErr)
 		}
-		requirements = append(requirements, parseRequirement(entry.Name(), string(content)))
+		requirement := parseRequirement(entry.Name(), string(content))
+		if requirement.statusError != "" {
+			return nil, fmt.Errorf("invalid status in %s: %s; expected one of draft, active, confirmed, deferred, rejected", entry.Name(), requirement.statusError)
+		}
+		requirements = append(requirements, requirement)
 	}
 	if len(requirements) == 0 {
 		return nil, errors.New("no requirement documents found; add a Markdown requirement under control/requirements")
@@ -205,14 +261,45 @@ func parseRequirement(filename, content string) requirement {
 			result.title = strings.TrimSpace(strings.TrimPrefix(trimmed, "# "))
 		}
 		if strings.HasPrefix(strings.ToLower(trimmed), "status:") {
-			result.status = strings.TrimSpace(strings.TrimPrefix(strings.ToLower(trimmed), "status:"))
+			value := strings.TrimSpace(trimmed[len("status:"):])
+			fields := strings.Fields(value)
+			if len(fields) == 0 {
+				result.statusError = "status is empty"
+				continue
+			}
+			result.status = strings.ToLower(strings.Trim(fields[0], "`\"'"))
+			if !knownRequirementStatus(result.status) {
+				result.statusError = fmt.Sprintf("unknown status %q", result.status)
+				continue
+			}
+			result.statusNote = strings.TrimSpace(strings.TrimLeft(value[len(fields[0]):], " -—:()"))
 		}
 	}
 	return result
 }
 
+func knownRequirementStatus(status string) bool {
+	switch status {
+	case "draft", "active", "confirmed", "deferred", "rejected":
+		return true
+	default:
+		return false
+	}
+}
+
 func buildPlan(projectName string, requirements []requirement, approvedDataStores []string) planResult {
-	result := planResult{projectName: projectName, requirements: requirements, dataStores: append([]string(nil), approvedDataStores...)}
+	return buildPlanFromModel(approvedModel{projectName: projectName, dataStores: approvedDataStores}, requirements)
+}
+
+func buildPlanFromModel(model approvedModel, requirements []requirement) planResult {
+	result := planResult{
+		projectName:  model.projectName,
+		requirements: requirements,
+		services:     append([]string(nil), model.services...),
+		dependencies: append([]string(nil), model.dependencies...),
+		dataStores:   append([]string(nil), model.dataStores...),
+		entryPoints:  append([]string(nil), model.entryPoints...),
+	}
 	var combined strings.Builder
 	for _, item := range requirements {
 		status := strings.ToLower(item.status)
@@ -230,19 +317,35 @@ func buildPlan(projectName string, requirements []requirement, approvedDataStore
 	text := combined.String()
 
 	if containsAny(text, "lti", "registration", "http", "api") {
-		result.services = append(result.services, "registration-service")
-		result.entryPoints = append(result.entryPoints, "registration HTTP entry point")
+		if len(result.services) == 0 {
+			result.services = appendUnique(result.services, "registration-service")
+			result.proposedServices = appendUnique(result.proposedServices, "registration-service")
+			result.proposals = append(result.proposals, "A registration service was inferred; confirm or rename it in control/project.yaml.")
+		}
+		if len(result.entryPoints) == 0 {
+			result.entryPoints = appendUnique(result.entryPoints, "registration HTTP entry point")
+			result.proposedEntryPoints = appendUnique(result.proposedEntryPoints, "registration HTTP entry point")
+			result.proposals = append(result.proposals, "A registration HTTP entry point was inferred; confirm its route and method in control/project.yaml.")
+		}
 	}
 	if containsAny(text, "lms", "canvas", "external platform") {
-		result.dependencies = append(result.dependencies, "external LMS platform")
+		if len(result.dependencies) == 0 {
+			result.dependencies = appendUnique(result.dependencies, "external LMS platform")
+			result.proposedDependencies = appendUnique(result.proposedDependencies, "external LMS platform")
+			result.proposals = append(result.proposals, "An external LMS dependency was inferred; identify it explicitly in control/project.yaml.")
+		}
 	}
 	if containsAny(text, "postgres", "postgresql", "database", "persistent", "store") {
-		if len(approvedDataStores) == 0 {
+		if len(result.dataStores) == 0 {
 			result.conflicts = append(result.conflicts, "active requirements imply a data store, but the approved project model declares data_stores: []")
+			result.proposals = append(result.proposals, "A data store is implied but was not invented; declare its approved type and lifecycle in control/project.yaml.")
 		}
 	}
 	if containsAny(text, "health", "readiness", "telemetry", "metrics") {
-		result.entryPoints = append(result.entryPoints, "operational health and telemetry endpoints")
+		if len(model.entryPoints) == 0 {
+			result.entryPoints = appendUnique(result.entryPoints, "operational health and telemetry endpoints")
+			result.proposedEntryPoints = appendUnique(result.proposedEntryPoints, "operational health and telemetry endpoints")
+		}
 	}
 	if len(result.services) == 0 {
 		result.unresolved = append(result.unresolved, "no implementable application service was identified")
@@ -250,7 +353,26 @@ func buildPlan(projectName string, requirements []requirement, approvedDataStore
 	if len(result.dependencies) == 0 {
 		result.unresolved = append(result.unresolved, "no external or runtime dependency was identified")
 	}
+	for _, item := range requirements {
+		if item.status != "active" && item.status != "confirmed" {
+			continue
+		}
+		trace := requirementTrace{requirementID: item.id, services: append([]string(nil), result.services...), dependencies: append([]string(nil), result.dependencies...), entryPoints: append([]string(nil), result.entryPoints...)}
+		if containsAny(strings.ToLower(item.body), "postgres", "postgresql", "database", "persistent", "store") {
+			trace.dataStores = append([]string(nil), result.dataStores...)
+		}
+		result.traces = append(result.traces, trace)
+	}
 	return result
+}
+
+func appendUnique(values []string, value string) []string {
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
 }
 
 func containsAny(value string, terms ...string) bool {
@@ -269,16 +391,41 @@ func renderPlanMarkdown(result planResult) string {
 	builder.WriteString("This plan is derived from the active requirement documents. It proposes project-model changes only; it does not implement services or provision infrastructure.\n\n")
 	builder.WriteString("## Requirements\n\n")
 	for _, item := range result.requirements {
-		fmt.Fprintf(&builder, "- `%s` — %s (status: %s)\n", item.id, item.title, item.status)
+		if item.statusNote != "" {
+			fmt.Fprintf(&builder, "- `%s` — %s (status: %s; note: %s)\n", item.id, item.title, item.status, item.statusNote)
+		} else {
+			fmt.Fprintf(&builder, "- `%s` — %s (status: %s)\n", item.id, item.title, item.status)
+		}
 	}
-	builder.WriteString("\n## Proposed services\n\n")
+	builder.WriteString("\n## Project model used by planner\n\n")
+	builder.WriteString("### Services\n\n")
 	writeList(&builder, result.services)
-	builder.WriteString("\n## Proposed dependencies\n\n")
+	builder.WriteString("\n### Dependencies\n\n")
 	writeList(&builder, result.dependencies)
-	builder.WriteString("\n## Proposed data stores\n\n")
+	builder.WriteString("\n### Data stores\n\n")
 	writeList(&builder, result.dataStores)
-	builder.WriteString("\n## Proposed entry points\n\n")
+	builder.WriteString("\n### Entry points\n\n")
 	writeList(&builder, result.entryPoints)
+	builder.WriteString("\n## Proposed additions\n\n")
+	if len(result.proposals) == 0 && len(result.proposedServices) == 0 && len(result.proposedDependencies) == 0 && len(result.proposedDataStores) == 0 && len(result.proposedEntryPoints) == 0 {
+		builder.WriteString("- None identified.\n")
+	} else {
+		for _, proposal := range result.proposals {
+			fmt.Fprintf(&builder, "- %s\n", proposal)
+		}
+		writeProposedList(&builder, "services", result.proposedServices)
+		writeProposedList(&builder, "dependencies", result.proposedDependencies)
+		writeProposedList(&builder, "data stores", result.proposedDataStores)
+		writeProposedList(&builder, "entry points", result.proposedEntryPoints)
+	}
+	builder.WriteString("\n## Requirement traceability\n\n")
+	if len(result.traces) == 0 {
+		builder.WriteString("- None identified.\n")
+	} else {
+		for _, trace := range result.traces {
+			fmt.Fprintf(&builder, "- `%s`: services=%s; dependencies=%s; data stores=%s; entry points=%s\n", trace.requirementID, formatTraceValues(trace.services), formatTraceValues(trace.dependencies), formatTraceValues(trace.dataStores), formatTraceValues(trace.entryPoints))
+		}
+	}
 	builder.WriteString("\n## Deferred requirements\n\n")
 	writeList(&builder, result.deferred)
 	builder.WriteString("\n## Planner conflicts\n\n")
@@ -308,6 +455,25 @@ func renderPlanYAML(result planResult) string {
 	writeYAMLList(&builder, result.dataStores)
 	builder.WriteString("entry_points:\n")
 	writeYAMLList(&builder, result.entryPoints)
+	builder.WriteString("proposed_additions:\n  services:\n")
+	writeYAMLListIndented(&builder, result.proposedServices)
+	builder.WriteString("  dependencies:\n")
+	writeYAMLListIndented(&builder, result.proposedDependencies)
+	builder.WriteString("  data_stores:\n")
+	writeYAMLListIndented(&builder, result.proposedDataStores)
+	builder.WriteString("  entry_points:\n")
+	writeYAMLListIndented(&builder, result.proposedEntryPoints)
+	builder.WriteString("requirement_traceability:\n")
+	for _, trace := range result.traces {
+		fmt.Fprintf(&builder, "  - requirement: %q\n    services:\n", trace.requirementID)
+		writeYAMLListIndented(&builder, trace.services)
+		builder.WriteString("    dependencies:\n")
+		writeYAMLListIndented(&builder, trace.dependencies)
+		builder.WriteString("    data_stores:\n")
+		writeYAMLListIndented(&builder, trace.dataStores)
+		builder.WriteString("    entry_points:\n")
+		writeYAMLListIndented(&builder, trace.entryPoints)
+	}
 	builder.WriteString("deferred_requirements:\n")
 	writeYAMLList(&builder, result.deferred)
 	builder.WriteString("conflicts:\n")
@@ -327,6 +493,20 @@ func writeList(builder *strings.Builder, values []string) {
 	}
 }
 
+func writeProposedList(builder *strings.Builder, label string, values []string) {
+	if len(values) == 0 {
+		return
+	}
+	fmt.Fprintf(builder, "- Proposed %s: %s\n", label, formatTraceValues(values))
+}
+
+func formatTraceValues(values []string) string {
+	if len(values) == 0 {
+		return "none"
+	}
+	return strings.Join(values, ", ")
+}
+
 func writeYAMLList(builder *strings.Builder, values []string) {
 	if len(values) == 0 {
 		builder.WriteString("  []\n")
@@ -334,5 +514,15 @@ func writeYAMLList(builder *strings.Builder, values []string) {
 	}
 	for _, value := range values {
 		fmt.Fprintf(builder, "  - %q\n", value)
+	}
+}
+
+func writeYAMLListIndented(builder *strings.Builder, values []string) {
+	if len(values) == 0 {
+		builder.WriteString("      []\n")
+		return
+	}
+	for _, value := range values {
+		fmt.Fprintf(builder, "      - %q\n", value)
 	}
 }
