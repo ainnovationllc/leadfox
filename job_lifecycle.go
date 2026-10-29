@@ -43,26 +43,27 @@ checks scope, runs required gates, and records evidence before approval.
 `
 
 type jobPacket struct {
-	ID             string            `yaml:"id"`
-	Status         string            `yaml:"status"`
-	Role           string            `yaml:"role"`
-	Objective      string            `yaml:"objective"`
-	BaseBranch     string            `yaml:"base_branch,omitempty"`
-	BaseCommit     string            `yaml:"base_commit,omitempty"`
-	Branch         string            `yaml:"branch,omitempty"`
-	Worktree       string            `yaml:"worktree,omitempty"`
-	ReviewCommit   string            `yaml:"review_commit,omitempty"`
-	ReviewWorktree string            `yaml:"review_worktree,omitempty"`
-	AllowedPaths   []string          `yaml:"allowed_paths,omitempty"`
-	ExcludedPaths  []string          `yaml:"excluded_paths,omitempty"`
-	Gates          []string          `yaml:"gates,omitempty"`
-	CreatedAt      string            `yaml:"created_at,omitempty"`
-	UpdatedAt      string            `yaml:"updated_at,omitempty"`
-	GateEvidence   []jobGateEvidence `yaml:"gate_evidence,omitempty"`
-	ReviewRounds   []jobReviewRound  `yaml:"review_rounds,omitempty"`
-	ApprovedBy     string            `yaml:"approved_by,omitempty"`
-	ApprovedAt     string            `yaml:"approved_at,omitempty"`
-	MergeCommit    string            `yaml:"merge_commit,omitempty"`
+	ID              string            `yaml:"id"`
+	Status          string            `yaml:"status"`
+	Role            string            `yaml:"role"`
+	Objective       string            `yaml:"objective"`
+	BaseBranch      string            `yaml:"base_branch,omitempty"`
+	BaseCommit      string            `yaml:"base_commit,omitempty"`
+	Branch          string            `yaml:"branch,omitempty"`
+	Worktree        string            `yaml:"worktree,omitempty"`
+	ReviewCommit    string            `yaml:"review_commit,omitempty"`
+	ReviewWorktree  string            `yaml:"review_worktree,omitempty"`
+	ReviewWorktrees []string          `yaml:"review_worktrees,omitempty"`
+	AllowedPaths    []string          `yaml:"allowed_paths,omitempty"`
+	ExcludedPaths   []string          `yaml:"excluded_paths,omitempty"`
+	Gates           []string          `yaml:"gates,omitempty"`
+	CreatedAt       string            `yaml:"created_at,omitempty"`
+	UpdatedAt       string            `yaml:"updated_at,omitempty"`
+	GateEvidence    []jobGateEvidence `yaml:"gate_evidence,omitempty"`
+	ReviewRounds    []jobReviewRound  `yaml:"review_rounds,omitempty"`
+	ApprovedBy      string            `yaml:"approved_by,omitempty"`
+	ApprovedAt      string            `yaml:"approved_at,omitempty"`
+	MergeCommit     string            `yaml:"merge_commit,omitempty"`
 }
 
 type jobGateEvidence struct {
@@ -576,14 +577,19 @@ func jobReview(root, id string, o jobOptions) error {
 	if err := ensureExternalWorktree(root, worktree); err != nil {
 		return err
 	}
-	if _, err := os.Stat(worktree); err == nil {
-		if packet.ReviewWorktree == worktree && (packet.Status == "review" || packet.Status == "changes-requested") {
-			if _, removeErr := gitOutput(root, "worktree", "remove", "--force", worktree); removeErr != nil {
-				return fmt.Errorf("remove previous review worktree: %w", removeErr)
+	if packet.Status == "review" || packet.Status == "changes-requested" {
+		for _, previous := range uniqueStrings(append(packet.ReviewWorktrees, packet.ReviewWorktree)) {
+			if _, statErr := os.Stat(previous); statErr == nil {
+				if _, removeErr := gitOutput(root, "worktree", "remove", "--force", previous); removeErr != nil {
+					return fmt.Errorf("remove previous review worktree: %w", removeErr)
+				}
+			} else if !os.IsNotExist(statErr) {
+				return statErr
 			}
-		} else {
-			return fmt.Errorf("review worktree already exists: %s", worktree)
 		}
+	}
+	if _, err := os.Stat(worktree); err == nil {
+		return fmt.Errorf("review worktree already exists: %s", worktree)
 	} else if !os.IsNotExist(err) {
 		return err
 	}
@@ -601,6 +607,7 @@ func jobReview(root, id string, o jobOptions) error {
 	}
 	round := jobReviewRound{Number: len(packet.ReviewRounds) + 1, Commit: commit, Status: "review", RecordedAt: time.Now().UTC().Format(time.RFC3339), Evidence: evidence}
 	packet.Status, packet.ReviewCommit, packet.ReviewWorktree, packet.UpdatedAt = "review", commit, worktree, time.Now().UTC().Format(time.RFC3339)
+	packet.ReviewWorktrees = appendUnique(packet.ReviewWorktrees, worktree)
 	packet.GateEvidence = evidence
 	packet.ReviewRounds = append(packet.ReviewRounds, round)
 	if err := writeJob(root, packet, body); err != nil {
@@ -715,8 +722,11 @@ func jobMerge(root, id string) error {
 	if err := commitLifecycleRecord(root, []string{jobPath(root, id)}, "Record merge "+id); err != nil {
 		return err
 	}
-	for _, path := range uniqueStrings([]string{packet.Worktree, packet.ReviewWorktree}) {
+	for _, path := range uniqueStrings(append([]string{packet.Worktree, packet.ReviewWorktree}, packet.ReviewWorktrees...)) {
 		if path != "" {
+			if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
+				continue
+			}
 			if _, err := gitOutput(root, "worktree", "remove", "--force", path); err != nil {
 				return fmt.Errorf("merge succeeded but cleanup failed: %w", err)
 			}

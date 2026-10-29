@@ -82,7 +82,8 @@ Build the service skeleton.
 	if err := jobApprove(root, "JOB-001", jobOptions{verdict: "changes-requested"}); err != nil {
 		t.Fatalf("request changes: %v", err)
 	}
-	if err := jobReview(root, "JOB-001", jobOptions{commit: fullBranchCommit, worktree: reviewWorktree}); err != nil {
+	secondReviewWorktree := filepath.Join(root, "..", "job-review-second")
+	if err := jobReview(root, "JOB-001", jobOptions{commit: fullBranchCommit, worktree: secondReviewWorktree}); err != nil {
 		t.Fatalf("review second round: %v", err)
 	}
 	packetAfterSecondReview, _, err := readJob(root, "JOB-001")
@@ -110,6 +111,9 @@ Build the service skeleton.
 	}
 	if _, err := os.Stat(reviewWorktree); !os.IsNotExist(err) {
 		t.Fatalf("review worktree was not removed: %v", err)
+	}
+	if _, err := os.Stat(secondReviewWorktree); !os.IsNotExist(err) {
+		t.Fatalf("second review worktree was not removed: %v", err)
 	}
 	merged := gitTest(t, root, "log", "--oneline", "-3")
 	if !strings.Contains(merged, "Merge JOB-001") || !strings.Contains(merged, "Record merge JOB-001") {
