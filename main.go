@@ -16,6 +16,7 @@ Commands:
   init <name>       Create a new Leadfox project
   plan              Create an architecture plan from requirements
   gate run <name>   Execute a project gate and report evidence
+  job <operation>   Manage a bounded agent job lifecycle
   help              Show this help message
 
 Options:
@@ -78,6 +79,11 @@ func main() {
 		}
 	case "gate":
 		if err := runGateCommand(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(1)
+		}
+	case "job":
+		if err := runJobCommand(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "Error:", err)
 			os.Exit(1)
 		}
