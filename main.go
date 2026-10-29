@@ -17,6 +17,7 @@ Commands:
   plan              Create an architecture plan from requirements
   gate run <name>   Execute a project gate and report evidence
   job <operation>   Manage a bounded agent job lifecycle
+  version           Show the Leadfox version
   help              Show this help message
 
 Options:
@@ -67,6 +68,8 @@ func main() {
 	switch os.Args[1] {
 	case "-h", "--help", "help":
 		fmt.Print(helpText)
+	case "version", "--version":
+		fmt.Println(leadfoxVersion())
 	case "init":
 		if err := runInit(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "Error:", err)

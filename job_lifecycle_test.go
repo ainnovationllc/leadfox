@@ -26,6 +26,8 @@ allowed_paths:
   - services/example/**
 gates:
   - unit
+review_setup:
+  - touch review-ready
 ---
 # JOB-001
 
@@ -37,7 +39,7 @@ Build the service skeleton.
 	if err := os.MkdirAll(filepath.Join(root, "services", "example"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "control", "gates.yaml"), []byte("gates:\n  - id: unit\n    checks:\n      - id: packet\n        run: test -f control/project.yaml\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "control", "gates.yaml"), []byte("gates:\n  - id: unit\n    checks:\n      - id: scope\n        manual: true\n      - id: packet\n        run: test -f review-ready && test -f control/project.yaml\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "control", "project.yaml"), []byte("project:\n  name: test\n"), 0o644); err != nil {
@@ -52,6 +54,13 @@ Build the service skeleton.
 	jobWorktree := filepath.Join(root, "..", "job-worktree")
 	if err := jobStart(root, "JOB-001", jobOptions{worktree: jobWorktree}); err != nil {
 		t.Fatalf("start job: %v", err)
+	}
+	jobCopy, _, err := readJob(jobWorktree, "JOB-001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if jobCopy.Status != "running" || jobCopy.Branch == "" || jobCopy.Worktree == "" || jobCopy.BaseCommit == "" {
+		t.Fatalf("job worktree received stale packet: %+v", jobCopy)
 	}
 	changed := filepath.Join(jobWorktree, "services", "example", "service.go")
 	if err := os.WriteFile(changed, []byte("package example\n"), 0o644); err != nil {
@@ -79,7 +88,21 @@ Build the service skeleton.
 	if len(packetAfterReview.GateEvidence) != 1 || !packetAfterReview.GateEvidence[0].Verified {
 		t.Fatalf("gate evidence was not recorded: %+v", packetAfterReview.GateEvidence)
 	}
-	if err := jobApprove(root, "JOB-001", jobOptions{verdict: "changes-requested"}); err != nil {
+	evidencePath := filepath.Join(root, packetAfterReview.GateEvidence[0].Evidence)
+	evidenceBytes, err := os.ReadFile(evidencePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(evidencePath, []byte("tampered\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := jobApprove(root, "JOB-001", jobOptions{verdict: "accepted", approvedBy: "developer"}); err == nil {
+		t.Fatal("approval accepted tampered evidence")
+	}
+	if err := os.WriteFile(evidencePath, evidenceBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := jobApprove(root, "JOB-001", jobOptions{verdict: "changes-requested", approvedBy: "developer"}); err != nil {
 		t.Fatalf("request changes: %v", err)
 	}
 	secondReviewWorktree := filepath.Join(root, "..", "job-review-second")
@@ -93,7 +116,7 @@ Build the service skeleton.
 	if len(packetAfterSecondReview.ReviewRounds) != 2 {
 		t.Fatalf("review rounds were overwritten: %+v", packetAfterSecondReview.ReviewRounds)
 	}
-	if err := jobApprove(root, "JOB-001", jobOptions{verdict: "accepted"}); err != nil {
+	if err := jobApprove(root, "JOB-001", jobOptions{verdict: "accepted", approvedBy: "developer"}); err != nil {
 		t.Fatalf("approve job: %v", err)
 	}
 	approval, err := os.ReadFile(filepath.Join(root, "control", "approvals", "JOB-001.md"))
@@ -132,6 +155,39 @@ Build the service skeleton.
 	}
 	if !strings.Contains(string(evidence), fullBranchCommit) {
 		t.Fatalf("gate evidence does not identify reviewed commit: %s", evidence)
+	}
+}
+
+func TestJobCanBeCancelledWithReason(t *testing.T) {
+	root := t.TempDir()
+	gitTest(t, root, "init", "-b", "main")
+	gitTest(t, root, "config", "user.email", "leadfox@example.test")
+	gitTest(t, root, "config", "user.name", "Leadfox Test")
+	if err := os.MkdirAll(filepath.Join(root, "control", "jobs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	packet := `---
+id: JOB-CANCEL
+status: running
+role: service
+objective: test cancellation
+---
+# JOB-CANCEL
+`
+	if err := os.WriteFile(jobPath(root, "JOB-CANCEL"), []byte(packet), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, root, "add", ".")
+	gitTest(t, root, "commit", "-m", "initial")
+	if err := jobTerminate(root, "JOB-CANCEL", "cancelled", jobOptions{reason: "review prerequisite unavailable", approvedBy: "Control"}); err != nil {
+		t.Fatal(err)
+	}
+	updated, _, err := readJob(root, "JOB-CANCEL")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != "cancelled" || updated.TerminalReason != "review prerequisite unavailable" {
+		t.Fatalf("unexpected cancellation record: %+v", updated)
 	}
 }
 

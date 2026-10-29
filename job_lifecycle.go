@@ -1,6 +1,9 @@
 package main
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -23,6 +26,9 @@ Usage:
   leadfox job scope <id> [options]
   leadfox job review <id> [options]
   leadfox job approve <id> --verdict accepted|changes-requested
+  leadfox job attest <id> --check GATE/CHECK --result passed [--note TEXT]
+  leadfox job cancel <id> --reason TEXT
+  leadfox job block <id> --reason TEXT
   leadfox job merge <id>
 
 Options:
@@ -35,7 +41,11 @@ Options:
       --allow GLOB        Allowed path (repeatable)
       --exclude GLOB      Excluded path (repeatable)
       --gate ID           Required gate (repeatable)
+      --setup COMMAND     Review setup command (repeatable)
       --verdict VALUE     accepted or changes-requested
+      --approved-by NAME  Explicit approver identity
+      --reason TEXT       Reason for cancellation, blocking, or re-review
+      --note TEXT         Attestation or approval note
   -h, --help              Show this help message
 
 Review creates a clean detached worktree, resolves commits to full IDs,
@@ -43,27 +53,33 @@ checks scope, runs required gates, and records evidence before approval.
 `
 
 type jobPacket struct {
-	ID              string            `yaml:"id"`
-	Status          string            `yaml:"status"`
-	Role            string            `yaml:"role"`
-	Objective       string            `yaml:"objective"`
-	BaseBranch      string            `yaml:"base_branch,omitempty"`
-	BaseCommit      string            `yaml:"base_commit,omitempty"`
-	Branch          string            `yaml:"branch,omitempty"`
-	Worktree        string            `yaml:"worktree,omitempty"`
-	ReviewCommit    string            `yaml:"review_commit,omitempty"`
-	ReviewWorktree  string            `yaml:"review_worktree,omitempty"`
-	ReviewWorktrees []string          `yaml:"review_worktrees,omitempty"`
-	AllowedPaths    []string          `yaml:"allowed_paths,omitempty"`
-	ExcludedPaths   []string          `yaml:"excluded_paths,omitempty"`
-	Gates           []string          `yaml:"gates,omitempty"`
-	CreatedAt       string            `yaml:"created_at,omitempty"`
-	UpdatedAt       string            `yaml:"updated_at,omitempty"`
-	GateEvidence    []jobGateEvidence `yaml:"gate_evidence,omitempty"`
-	ReviewRounds    []jobReviewRound  `yaml:"review_rounds,omitempty"`
-	ApprovedBy      string            `yaml:"approved_by,omitempty"`
-	ApprovedAt      string            `yaml:"approved_at,omitempty"`
-	MergeCommit     string            `yaml:"merge_commit,omitempty"`
+	ID               string              `yaml:"id"`
+	Status           string              `yaml:"status"`
+	Role             string              `yaml:"role"`
+	Objective        string              `yaml:"objective"`
+	BaseBranch       string              `yaml:"base_branch,omitempty"`
+	BaseCommit       string              `yaml:"base_commit,omitempty"`
+	Branch           string              `yaml:"branch,omitempty"`
+	Worktree         string              `yaml:"worktree,omitempty"`
+	ReviewCommit     string              `yaml:"review_commit,omitempty"`
+	ReviewWorktree   string              `yaml:"review_worktree,omitempty"`
+	ReviewWorktrees  []string            `yaml:"review_worktrees,omitempty"`
+	AllowedPaths     []string            `yaml:"allowed_paths,omitempty"`
+	ExcludedPaths    []string            `yaml:"excluded_paths,omitempty"`
+	Gates            []string            `yaml:"gates,omitempty"`
+	CreatedAt        string              `yaml:"created_at,omitempty"`
+	UpdatedAt        string              `yaml:"updated_at,omitempty"`
+	GateEvidence     []jobGateEvidence   `yaml:"gate_evidence,omitempty"`
+	ReviewRounds     []jobReviewRound    `yaml:"review_rounds,omitempty"`
+	ReviewSetup      []string            `yaml:"review_setup,omitempty"`
+	Attestations     []jobAttestation    `yaml:"attestations,omitempty"`
+	RemovedWorktrees []jobWorktreeRecord `yaml:"removed_worktrees,omitempty"`
+	ApprovedBy       string              `yaml:"approved_by,omitempty"`
+	ApprovedAt       string              `yaml:"approved_at,omitempty"`
+	MergeCommit      string              `yaml:"merge_commit,omitempty"`
+	TerminalReason   string              `yaml:"terminal_reason,omitempty"`
+	TerminalBy       string              `yaml:"terminal_by,omitempty"`
+	TerminalAt       string              `yaml:"terminal_at,omitempty"`
 }
 
 type jobGateEvidence struct {
@@ -72,28 +88,57 @@ type jobGateEvidence struct {
 	Verified   bool   `yaml:"verified"`
 	Commit     string `yaml:"commit"`
 	Evidence   string `yaml:"evidence"`
+	Hash       string `yaml:"hash"`
 	RecordedAt string `yaml:"recorded_at"`
+}
+
+type jobAttestation struct {
+	Check      string `yaml:"check"`
+	Result     string `yaml:"result"`
+	Note       string `yaml:"note,omitempty"`
+	Actor      string `yaml:"actor"`
+	RecordedAt string `yaml:"recorded_at"`
+}
+
+type jobWorktreeRecord struct {
+	Path      string `yaml:"path"`
+	RemovedAt string `yaml:"removed_at"`
 }
 
 type jobReviewRound struct {
 	Number     int               `yaml:"number"`
 	Commit     string            `yaml:"commit"`
 	Status     string            `yaml:"status"`
+	Reason     string            `yaml:"reason,omitempty"`
 	RecordedAt string            `yaml:"recorded_at"`
 	Evidence   []jobGateEvidence `yaml:"evidence,omitempty"`
+	ApprovedBy string            `yaml:"approved_by,omitempty"`
+	ApprovedAt string            `yaml:"approved_at,omitempty"`
 }
 
 type gateEvidenceDocument struct {
-	Job        string     `yaml:"job"`
-	Round      int        `yaml:"round"`
-	Commit     string     `yaml:"commit"`
-	RecordedAt string     `yaml:"recorded_at"`
-	Result     gateResult `yaml:"result"`
+	Job          string           `yaml:"job"`
+	Round        int              `yaml:"round"`
+	Commit       string           `yaml:"commit"`
+	RecordedAt   string           `yaml:"recorded_at"`
+	Leadfox      string           `yaml:"leadfox"`
+	Setup        []setupResult    `yaml:"setup,omitempty"`
+	Attestations []jobAttestation `yaml:"attestations,omitempty"`
+	Result       gateResult       `yaml:"result"`
+}
+
+type setupResult struct {
+	Command  string `yaml:"command"`
+	Status   string `yaml:"status"`
+	ExitCode int    `yaml:"exit_code,omitempty"`
+	Output   string `yaml:"output,omitempty"`
+	Reason   string `yaml:"reason,omitempty"`
 }
 
 type jobOptions struct {
 	base, worktree, branch, commit, role, objective, verdict string
-	allow, exclude, gates                                    []string
+	approvedBy, reason, note, result, check                  string
+	allow, exclude, gates, setup                             []string
 	showHelp                                                 bool
 }
 
@@ -129,6 +174,12 @@ func runJobCommand(args []string) error {
 		return jobReview(root, id, options)
 	case "approve":
 		return jobApprove(root, id, options)
+	case "attest":
+		return jobAttest(root, id, options)
+	case "cancel":
+		return jobTerminate(root, id, "cancelled", options)
+	case "block":
+		return jobTerminate(root, id, "blocked", options)
 	case "merge":
 		return jobMerge(root, id)
 	default:
@@ -193,6 +244,36 @@ func parseJobOptions(args []string) (jobOptions, string, error) {
 			}
 			o.verdict = v
 			i = n
+		case "--approved-by":
+			v, n, e := requiredOptionValue(args, i, arg)
+			if e != nil {
+				return o, id, e
+			}
+			o.approvedBy, i = v, n
+		case "--reason":
+			v, n, e := requiredOptionValue(args, i, arg)
+			if e != nil {
+				return o, id, e
+			}
+			o.reason, i = v, n
+		case "--note":
+			v, n, e := requiredOptionValue(args, i, arg)
+			if e != nil {
+				return o, id, e
+			}
+			o.note, i = v, n
+		case "--result":
+			v, n, e := requiredOptionValue(args, i, arg)
+			if e != nil {
+				return o, id, e
+			}
+			o.result, i = v, n
+		case "--check":
+			v, n, e := requiredOptionValue(args, i, arg)
+			if e != nil {
+				return o, id, e
+			}
+			o.check, i = v, n
 		case "--allow":
 			v, n, e := requiredOptionValue(args, i, arg)
 			if e != nil {
@@ -213,6 +294,13 @@ func parseJobOptions(args []string) (jobOptions, string, error) {
 				return o, id, e
 			}
 			o.gates = append(o.gates, v)
+			i = n
+		case "--setup":
+			v, n, e := requiredOptionValue(args, i, arg)
+			if e != nil {
+				return o, id, e
+			}
+			o.setup = append(o.setup, v)
 			i = n
 		default:
 			if strings.HasPrefix(arg, "-") {
@@ -289,7 +377,7 @@ func jobNew(root, id string, o jobOptions) error {
 		o.objective = "Describe the bounded work for this job."
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	packet := jobPacket{ID: id, Status: "draft", Role: o.role, Objective: o.objective, BaseBranch: o.base, AllowedPaths: o.allow, ExcludedPaths: o.exclude, Gates: o.gates, CreatedAt: now, UpdatedAt: now}
+	packet := jobPacket{ID: id, Status: "draft", Role: o.role, Objective: o.objective, BaseBranch: o.base, AllowedPaths: o.allow, ExcludedPaths: o.exclude, Gates: o.gates, ReviewSetup: o.setup, CreatedAt: now, UpdatedAt: now}
 	body := "# " + id + "\n\n## Objective\n\n" + o.objective + "\n\n## Agent instructions\n\nRead the approved project documentation before starting. Do not modify files outside the allowed paths. Return a handoff listing changed paths, checks run, results, assumptions, unresolved items, and the recommended next step.\n\n## Acceptance\n\nSet the packet status to ready after Control has completed the job design.\n"
 	if err := writeJob(root, packet, body); err != nil {
 		return err
@@ -347,15 +435,19 @@ func jobStart(root, id string, o jobOptions) error {
 	if err != nil {
 		return fmt.Errorf("resolve base: %w", err)
 	}
-	if _, err := gitOutput(root, "worktree", "add", "-b", branch, worktree, base); err != nil {
-		return fmt.Errorf("create job worktree: %w", err)
-	}
 	packet.Status, packet.BaseBranch, packet.BaseCommit, packet.Branch, packet.Worktree, packet.UpdatedAt = "running", base, strings.TrimSpace(baseCommit), branch, worktree, time.Now().UTC().Format(time.RFC3339)
 	if err := writeJob(root, packet, body); err != nil {
 		return err
 	}
 	if err := commitLifecycleRecord(root, []string{jobPath(root, id)}, "Record start "+id); err != nil {
 		return err
+	}
+	startCommit, err := resolveCommit(root, "HEAD")
+	if err != nil {
+		return fmt.Errorf("resolve start record: %w", err)
+	}
+	if _, err := gitOutput(root, "worktree", "add", "-b", branch, worktree, startCommit); err != nil {
+		return fmt.Errorf("create job worktree: %w", err)
 	}
 	fmt.Printf("Started %s on %s at %s\n", id, branch, worktree)
 	return nil
@@ -391,6 +483,9 @@ func checkJobScope(root string, packet jobPacket, worktree, commit string) error
 	paths := nonEmptyLines(changed)
 	var violations []string
 	for _, path := range paths {
+		if filepath.ToSlash(path) == filepath.ToSlash(filepath.Join("control", "jobs", packet.ID+".md")) {
+			continue
+		}
 		if matchesAny(path, packet.ExcludedPaths) || !matchesAny(path, packet.AllowedPaths) {
 			violations = append(violations, path)
 		}
@@ -403,14 +498,54 @@ func checkJobScope(root string, packet jobPacket, worktree, commit string) error
 		}
 		return errors.New("job changed paths outside its allowlist")
 	}
-	fmt.Printf("Scope: PASSED (%d changed paths)\n", len(paths))
+	visiblePaths := make([]string, 0, len(paths))
 	for _, path := range paths {
+		if filepath.ToSlash(path) != filepath.ToSlash(filepath.Join("control", "jobs", packet.ID+".md")) {
+			visiblePaths = append(visiblePaths, path)
+		}
+	}
+	fmt.Printf("Scope: PASSED (%d changed paths)\n", len(visiblePaths))
+	for _, path := range visiblePaths {
 		fmt.Println(" ", path)
 	}
 	return nil
 }
 
-func runJobGates(root string, packet jobPacket, worktree, commit string) ([]jobGateEvidence, error) {
+func runReviewSetup(worktree string, commands []string, timeout time.Duration) ([]setupResult, error) {
+	results := make([]setupResult, 0, len(commands))
+	for _, commandText := range commands {
+		result := setupResult{Command: commandText}
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		command := exec.CommandContext(ctx, "bash", "-c", commandText)
+		command.Dir = worktree
+		output, err := command.CombinedOutput()
+		result.Output = redactGateOutput(string(output))
+		if ctx.Err() == context.DeadlineExceeded {
+			result.Status = "failed"
+			result.ExitCode = 124
+			result.Reason = fmt.Sprintf("timed out after %s", timeout)
+			cancel()
+			results = append(results, result)
+			return results, fmt.Errorf("review setup timed out: %s", commandText)
+		}
+		cancel()
+		if err != nil {
+			result.Status = "failed"
+			result.ExitCode = 1
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				result.ExitCode = exitErr.ExitCode()
+			}
+			result.Reason = err.Error()
+			results = append(results, result)
+			return results, fmt.Errorf("review setup failed: %s", commandText)
+		}
+		result.Status = "passed"
+		results = append(results, result)
+	}
+	return results, nil
+}
+
+func runJobGates(root string, packet jobPacket, worktree, commit string, setupErr error, setupResults []setupResult) ([]jobGateEvidence, error) {
 	if len(packet.Gates) == 0 {
 		return nil, nil
 	}
@@ -420,14 +555,23 @@ func runJobGates(root string, packet jobPacket, worktree, commit string) ([]jobG
 		return nil, fmt.Errorf("create evidence directory: %w", err)
 	}
 	results := make([]jobGateEvidence, 0, len(packet.Gates))
+	var firstErr error
 	for _, gateName := range packet.Gates {
-		result, err := executeGate(worktree, gateOptions{gateName: gateName, worktree: worktree, timeout: 10 * time.Minute})
-		if err != nil {
-			return nil, fmt.Errorf("execute required gate %q: %w", gateName, err)
+		var result gateResult
+		var err error
+		if setupErr != nil {
+			now := time.Now().UTC()
+			result = gateResult{Gate: gateName, Worktree: worktree, StartedAt: now, FinishedAt: now, Status: "failed", Checks: []checkResult{{ID: "review-setup", Status: "failed", ExitCode: 1, Reason: setupErr.Error()}}}
+		} else {
+			result, err = executeGate(worktree, gateOptions{gateName: gateName, worktree: worktree, timeout: 10 * time.Minute})
+			if err != nil {
+				now := time.Now().UTC()
+				result = gateResult{Gate: gateName, Worktree: worktree, StartedAt: now, FinishedAt: now, Status: "failed", Checks: []checkResult{{ID: "gate-runner", Status: "failed", ExitCode: 1, Reason: err.Error()}}}
+			}
 		}
-		verified := gateResultVerified(result, gateName, root, packet, worktree, commit)
+		verified := gateResultVerified(result, gateName, packet)
 		path := filepath.Join(evidenceDir, fmt.Sprintf("%s-round-%d-%s.yaml", packet.ID, round, sanitizeFilename(gateName)))
-		document := gateEvidenceDocument{Job: packet.ID, Round: round, Commit: commit, RecordedAt: time.Now().UTC().Format(time.RFC3339), Result: result}
+		document := gateEvidenceDocument{Job: packet.ID, Round: round, Commit: commit, RecordedAt: time.Now().UTC().Format(time.RFC3339), Leadfox: leadfoxVersion(), Setup: setupResults, Attestations: packet.Attestations, Result: result}
 		encoded, err := yaml.Marshal(document)
 		if err != nil {
 			return nil, fmt.Errorf("encode gate evidence: %w", err)
@@ -439,15 +583,18 @@ func runJobGates(root string, packet jobPacket, worktree, commit string) ([]jobG
 		if err != nil {
 			return nil, err
 		}
-		results = append(results, jobGateEvidence{Gate: gateName, Status: result.Status, Verified: verified, Commit: commit, Evidence: filepath.ToSlash(relative), RecordedAt: document.RecordedAt})
+		hash := sha256.Sum256(encoded)
+		results = append(results, jobGateEvidence{Gate: gateName, Status: result.Status, Verified: verified, Commit: commit, Evidence: filepath.ToSlash(relative), Hash: hex.EncodeToString(hash[:]), RecordedAt: document.RecordedAt})
 		if !verified {
-			return nil, fmt.Errorf("required gate %q did not verify: %s", gateName, gateResultReason(result))
+			if firstErr == nil {
+				firstErr = fmt.Errorf("required gate %q did not verify: %s", gateName, gateResultReason(result))
+			}
 		}
 	}
-	return results, nil
+	return results, firstErr
 }
 
-func gateResultVerified(result gateResult, gateName, root string, packet jobPacket, worktree, commit string) bool {
+func gateResultVerified(result gateResult, gateName string, packet jobPacket) bool {
 	if result.Status == "failed" || result.Status == "deferred" {
 		return false
 	}
@@ -456,9 +603,7 @@ func gateResultVerified(result gateResult, gateName, root string, packet jobPack
 			return false
 		}
 		if item.Status == "manual" {
-			// A job's scope is independently checked immediately before gates.
-			// That check is the attestation for the conventional manual scope check.
-			if item.ID != "scope" || checkJobScope(root, packet, worktree, commit) != nil {
+			if !hasAttestation(packet.Attestations, gateName+"/"+item.ID) {
 				return false
 			}
 		}
@@ -475,6 +620,24 @@ func gateResultReason(result gateResult) string {
 		}
 	}
 	return "manual or deferred checks require explicit attestation"
+}
+
+func hasAttestation(attestations []jobAttestation, check string) bool {
+	for _, attestation := range attestations {
+		if attestation.Check == check && attestation.Result == "passed" {
+			return true
+		}
+	}
+	return false
+}
+
+func appendAttestation(attestations []jobAttestation, value jobAttestation) []jobAttestation {
+	for _, existing := range attestations {
+		if existing.Check == value.Check && existing.Result == value.Result {
+			return attestations
+		}
+	}
+	return append(attestations, value)
 }
 
 func resolveCommit(root, value string) (string, error) {
@@ -498,7 +661,9 @@ func commitLifecycleRecord(root string, paths []string, message string) error {
 	if strings.TrimSpace(status) == "" {
 		return nil
 	}
-	if _, err := gitOutput(root, "commit", "-m", message, "-m", "Recorded by Leadfox lifecycle management."); err != nil {
+	operation := strings.TrimPrefix(message, "Record ")
+	commitBody := "Recorded by Leadfox lifecycle management.\n\nLeadfox-Managed: true\nLeadfox-Operation: " + operation
+	if _, err := gitOutput(root, "commit", "-m", message, "-m", commitBody); err != nil {
 		return fmt.Errorf("commit lifecycle record: %w", err)
 	}
 	return nil
@@ -552,6 +717,9 @@ func jobReview(root, id string, o jobOptions) error {
 	if err != nil {
 		return err
 	}
+	if packet.Status == "accepted" && o.reason == "" {
+		return errors.New("--reason is required to re-review an accepted job")
+	}
 	commit := o.commit
 	if commit == "" {
 		commit = packet.ReviewCommit
@@ -577,7 +745,7 @@ func jobReview(root, id string, o jobOptions) error {
 	if err := ensureExternalWorktree(root, worktree); err != nil {
 		return err
 	}
-	if packet.Status == "review" || packet.Status == "changes-requested" {
+	if packet.Status == "review" || packet.Status == "review-failed" || packet.Status == "changes-requested" {
 		for _, previous := range uniqueStrings(append(packet.ReviewWorktrees, packet.ReviewWorktree)) {
 			if _, statErr := os.Stat(previous); statErr == nil {
 				if _, removeErr := gitOutput(root, "worktree", "remove", "--force", previous); removeErr != nil {
@@ -600,13 +768,23 @@ func jobReview(root, id string, o jobOptions) error {
 		_, _ = gitOutput(root, "worktree", "remove", "--force", worktree)
 		return err
 	}
-	evidence, err := runJobGates(root, packet, worktree, commit)
-	if err != nil {
-		_, _ = gitOutput(root, "worktree", "remove", "--force", worktree)
-		return err
+	for _, gateName := range packet.Gates {
+		packet.Attestations = appendAttestation(packet.Attestations, jobAttestation{Check: gateName + "/scope", Result: "passed", Note: "Leadfox scope check passed for the reviewed commit.", Actor: "Leadfox", RecordedAt: time.Now().UTC().Format(time.RFC3339)})
 	}
-	round := jobReviewRound{Number: len(packet.ReviewRounds) + 1, Commit: commit, Status: "review", RecordedAt: time.Now().UTC().Format(time.RFC3339), Evidence: evidence}
-	packet.Status, packet.ReviewCommit, packet.ReviewWorktree, packet.UpdatedAt = "review", commit, worktree, time.Now().UTC().Format(time.RFC3339)
+	setupResults, setupErr := runReviewSetup(worktree, packet.ReviewSetup, 10*time.Minute)
+	evidence, gateErr := runJobGates(root, packet, worktree, commit, setupErr, setupResults)
+	reviewErr := setupErr
+	if reviewErr == nil {
+		reviewErr = gateErr
+	}
+	roundStatus := "review"
+	packetStatus := "review"
+	if reviewErr != nil {
+		roundStatus = "failed"
+		packetStatus = "review-failed"
+	}
+	round := jobReviewRound{Number: len(packet.ReviewRounds) + 1, Commit: commit, Status: roundStatus, Reason: o.reason, RecordedAt: time.Now().UTC().Format(time.RFC3339), Evidence: evidence}
+	packet.Status, packet.ReviewCommit, packet.ReviewWorktree, packet.UpdatedAt = packetStatus, commit, worktree, time.Now().UTC().Format(time.RFC3339)
 	packet.ReviewWorktrees = appendUnique(packet.ReviewWorktrees, worktree)
 	packet.GateEvidence = evidence
 	packet.ReviewRounds = append(packet.ReviewRounds, round)
@@ -619,6 +797,10 @@ func jobReview(root, id string, o jobOptions) error {
 	}
 	if err := commitLifecycleRecord(root, paths, fmt.Sprintf("Record review %s round %d", id, round.Number)); err != nil {
 		return err
+	}
+	if reviewErr != nil {
+		_, _ = gitOutput(root, "worktree", "remove", "--force", worktree)
+		return reviewErr
 	}
 	fmt.Printf("Created review worktree for %s at %s\n", id, worktree)
 	return nil
@@ -635,6 +817,9 @@ func jobApprove(root, id string, o jobOptions) error {
 	if o.verdict != "accepted" && o.verdict != "changes-requested" {
 		return errors.New("--verdict must be accepted or changes-requested")
 	}
+	if strings.TrimSpace(o.approvedBy) == "" {
+		return errors.New("--approved-by is required so the approval identity is explicit")
+	}
 	if len(packet.Gates) > 0 {
 		if len(packet.GateEvidence) != len(packet.Gates) {
 			return errors.New("required gate evidence is missing; review the job before approval")
@@ -644,6 +829,9 @@ func jobApprove(root, id string, o jobOptions) error {
 				return fmt.Errorf("required gate %q is not verified", evidence.Gate)
 			}
 		}
+		if err := verifyGateEvidence(root, packet); err != nil {
+			return err
+		}
 	}
 	dir := filepath.Join(root, "control", "approvals")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -651,7 +839,7 @@ func jobApprove(root, id string, o jobOptions) error {
 	}
 	path := filepath.Join(dir, id+".md")
 	now := time.Now().UTC().Format(time.RFC3339)
-	actor := lifecycleActor()
+	actor := o.approvedBy
 	var record strings.Builder
 	if existing, readErr := os.ReadFile(path); readErr == nil {
 		record.Write(existing)
@@ -672,11 +860,18 @@ func jobApprove(root, id string, o jobOptions) error {
 			fmt.Fprintf(&record, "  - `%s`: %s; evidence: `%s`\n", evidence.Gate, evidence.Status, evidence.Evidence)
 		}
 	}
-	record.WriteString("\nControl review evidence is recorded in the referenced gate evidence files and the review handoff.\n")
+	if o.note != "" {
+		fmt.Fprintf(&record, "- Note: %s\n", o.note)
+	}
+	record.WriteString("\nControl review evidence is recorded in the referenced gate evidence files.\n")
 	if err := os.WriteFile(path, []byte(record.String()), 0o644); err != nil {
 		return err
 	}
 	packet.Status, packet.ApprovedBy, packet.ApprovedAt, packet.UpdatedAt = o.verdict, actor, now, now
+	if len(packet.ReviewRounds) > 0 {
+		last := &packet.ReviewRounds[len(packet.ReviewRounds)-1]
+		last.Status, last.ApprovedBy, last.ApprovedAt = o.verdict, actor, now
+	}
 	if err := writeJob(root, packet, body); err != nil {
 		return err
 	}
@@ -684,6 +879,153 @@ func jobApprove(root, id string, o jobOptions) error {
 		return err
 	}
 	fmt.Printf("Recorded %s verdict for %s\n", o.verdict, id)
+	return nil
+}
+
+func verifyGateEvidence(root string, packet jobPacket) error {
+	latestRound := len(packet.ReviewRounds)
+	for _, evidence := range packet.GateEvidence {
+		content, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(evidence.Evidence)))
+		if err != nil {
+			return fmt.Errorf("required gate evidence %q is unavailable: %w", evidence.Gate, err)
+		}
+		hash := sha256.Sum256(content)
+		if hex.EncodeToString(hash[:]) != evidence.Hash {
+			return fmt.Errorf("required gate evidence %q has changed since review", evidence.Gate)
+		}
+		var document gateEvidenceDocument
+		if err := yaml.Unmarshal(content, &document); err != nil {
+			return fmt.Errorf("parse evidence for gate %q: %w", evidence.Gate, err)
+		}
+		if document.Job != packet.ID || document.Round != latestRound || document.Commit != packet.ReviewCommit || document.Result.Gate != evidence.Gate {
+			return fmt.Errorf("required gate evidence %q does not match the reviewed job, round, commit, or gate", evidence.Gate)
+		}
+		if document.Result.Status != evidence.Status || document.Result.Status == "failed" || document.Result.Status == "deferred" {
+			return fmt.Errorf("required gate evidence %q is not passing", evidence.Gate)
+		}
+		for _, check := range document.Result.Checks {
+			if check.Status == "failed" || check.Status == "deferred" {
+				return fmt.Errorf("required gate evidence %q contains a %s check", evidence.Gate, check.Status)
+			}
+			if check.Status == "manual" && !hasAttestation(document.Attestations, evidence.Gate+"/"+check.ID) {
+				return fmt.Errorf("required gate evidence %q contains unattested manual check %q", evidence.Gate, check.ID)
+			}
+		}
+	}
+	return nil
+}
+
+func jobAttest(root, id string, o jobOptions) error {
+	packet, body, err := readJob(root, id)
+	if err != nil {
+		return err
+	}
+	if packet.Status != "review" && packet.Status != "review-failed" {
+		return fmt.Errorf("job %s is %q; attestations require a review result", id, packet.Status)
+	}
+	if o.check == "" {
+		return errors.New("--check is required, for example --check local-dev/scope")
+	}
+	if o.result != "passed" && o.result != "failed" {
+		return errors.New("--result must be passed or failed")
+	}
+	if o.approvedBy == "" {
+		return errors.New("--approved-by is required for a manual attestation")
+	}
+	attestation := jobAttestation{Check: o.check, Result: o.result, Note: o.note, Actor: o.approvedBy, RecordedAt: time.Now().UTC().Format(time.RFC3339)}
+	packet.Attestations = appendAttestation(packet.Attestations, attestation)
+	packet.UpdatedAt = attestation.RecordedAt
+	for index, evidence := range packet.GateEvidence {
+		content, readErr := os.ReadFile(filepath.Join(root, filepath.FromSlash(evidence.Evidence)))
+		if readErr != nil {
+			return fmt.Errorf("read gate evidence %q: %w", evidence.Gate, readErr)
+		}
+		var document gateEvidenceDocument
+		if err := yaml.Unmarshal(content, &document); err != nil {
+			return fmt.Errorf("parse gate evidence %q: %w", evidence.Gate, err)
+		}
+		document.Attestations = packet.Attestations
+		updated, err := yaml.Marshal(document)
+		if err != nil {
+			return fmt.Errorf("encode gate evidence %q: %w", evidence.Gate, err)
+		}
+		if err := os.WriteFile(filepath.Join(root, filepath.FromSlash(evidence.Evidence)), updated, 0o644); err != nil {
+			return fmt.Errorf("update gate evidence %q: %w", evidence.Gate, err)
+		}
+		hash := sha256.Sum256(updated)
+		packet.GateEvidence[index].Hash = hex.EncodeToString(hash[:])
+		packet.GateEvidence[index].Verified = gateResultVerified(document.Result, evidence.Gate, packet)
+	}
+	allVerified := len(packet.Gates) == 0
+	if len(packet.Gates) > 0 {
+		allVerified = len(packet.GateEvidence) == len(packet.Gates)
+		for _, evidence := range packet.GateEvidence {
+			allVerified = allVerified && evidence.Verified
+		}
+	}
+	if allVerified {
+		packet.Status = "review"
+	}
+	if err := writeJob(root, packet, body); err != nil {
+		return err
+	}
+	paths := []string{jobPath(root, id)}
+	for _, evidence := range packet.GateEvidence {
+		paths = append(paths, evidence.Evidence)
+	}
+	if err := commitLifecycleRecord(root, paths, "Record attestation "+id); err != nil {
+		return err
+	}
+	fmt.Printf("Recorded %s attestation for %s\n", o.result, o.check)
+	return nil
+}
+
+func jobTerminate(root, id, status string, o jobOptions) error {
+	packet, body, err := readJob(root, id)
+	if err != nil {
+		return err
+	}
+	if status != "cancelled" && status != "blocked" {
+		return errors.New("invalid terminal job state")
+	}
+	if o.reason == "" {
+		return errors.New("--reason is required")
+	}
+	if packet.Status == "merged" || packet.Status == "cancelled" || packet.Status == "blocked" {
+		return fmt.Errorf("job %s is already terminal: %s", id, packet.Status)
+	}
+	actor := o.approvedBy
+	if actor == "" {
+		actor = "Control"
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	packet.Status, packet.TerminalReason, packet.TerminalBy, packet.TerminalAt, packet.UpdatedAt = status, o.reason, actor, now, now
+	if err := writeJob(root, packet, body); err != nil {
+		return err
+	}
+	if err := commitLifecycleRecord(root, []string{jobPath(root, id)}, "Record "+status+" "+id); err != nil {
+		return err
+	}
+	for _, path := range uniqueStrings(append([]string{packet.Worktree, packet.ReviewWorktree}, packet.ReviewWorktrees...)) {
+		if path == "" {
+			continue
+		}
+		if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
+			continue
+		}
+		if _, removeErr := gitOutput(root, "worktree", "remove", "--force", path); removeErr != nil {
+			return fmt.Errorf("recorded %s but cleanup failed: %w", status, removeErr)
+		}
+		packet.RemovedWorktrees = append(packet.RemovedWorktrees, jobWorktreeRecord{Path: path, RemovedAt: now})
+	}
+	packet.Worktree, packet.ReviewWorktree = "", ""
+	if err := writeJob(root, packet, body); err != nil {
+		return err
+	}
+	if err := commitLifecycleRecord(root, []string{jobPath(root, id)}, "Record cleanup "+id); err != nil {
+		return err
+	}
+	fmt.Printf("Marked %s as %s and cleaned up worktrees\n", id, status)
 	return nil
 }
 
@@ -697,6 +1039,9 @@ func jobMerge(root, id string) error {
 	}
 	if packet.ReviewCommit == "" || packet.Branch == "" {
 		return errors.New("job is missing reviewed commit or source branch")
+	}
+	if err := verifyGateEvidence(root, packet); err != nil {
+		return fmt.Errorf("refusing merge: %w", err)
 	}
 	if err := gitCleanForLifecycle(root, id); err != nil {
 		return err
@@ -722,6 +1067,7 @@ func jobMerge(root, id string) error {
 	if err := commitLifecycleRecord(root, []string{jobPath(root, id)}, "Record merge "+id); err != nil {
 		return err
 	}
+	removedAt := time.Now().UTC().Format(time.RFC3339)
 	for _, path := range uniqueStrings(append([]string{packet.Worktree, packet.ReviewWorktree}, packet.ReviewWorktrees...)) {
 		if path != "" {
 			if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
@@ -730,7 +1076,15 @@ func jobMerge(root, id string) error {
 			if _, err := gitOutput(root, "worktree", "remove", "--force", path); err != nil {
 				return fmt.Errorf("merge succeeded but cleanup failed: %w", err)
 			}
+			packet.RemovedWorktrees = append(packet.RemovedWorktrees, jobWorktreeRecord{Path: path, RemovedAt: removedAt})
 		}
+	}
+	packet.Worktree, packet.ReviewWorktree = "", ""
+	if err := writeJob(root, packet, body); err != nil {
+		return err
+	}
+	if err := commitLifecycleRecord(root, []string{jobPath(root, id)}, "Record cleanup "+id); err != nil {
+		return err
 	}
 	fmt.Printf("Merged and cleaned up %s\n", id)
 	return nil
