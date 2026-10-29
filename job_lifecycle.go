@@ -750,15 +750,22 @@ func hasFailedAttestation(attestations []jobAttestation, gate, check string) boo
 	return false
 }
 
+func hasAnyAttestation(attestations []jobAttestation, gate, check string) bool {
+	for _, attestation := range attestations {
+		if attestation.Gate == gate && attestation.Check == check {
+			return true
+		}
+	}
+	return false
+}
+
 func appendAttestation(attestations []jobAttestation, value jobAttestation) []jobAttestation {
 	for index, existing := range attestations {
-		if existing.Gate == value.Gate && existing.Check == value.Check && existing.Result == value.Result {
-			// Review automatically records Leadfox's scope attestation. An
-			// explicit developer attestation must replace that placeholder so
-			// its identity, note, and timestamp are retained.
-			if existing.Actor == "Leadfox" && value.Actor != "Leadfox" {
-				attestations[index] = value
-			}
+		if existing.Gate == value.Gate && existing.Check == value.Check {
+			// Keep one current decision per manual check. This replaces the
+			// automatic scope placeholder with an explicit decision and avoids
+			// contradictory passed/failed entries accumulating.
+			attestations[index] = value
 			return attestations
 		}
 	}
@@ -993,7 +1000,9 @@ func appendScopeAttestations(worktree string, packet jobPacket) []jobAttestation
 				continue
 			}
 			for _, item := range gate.Checks {
-				if item.Manual || gate.Manual {
+				// Scope is the only manual result Leadfox can establish itself.
+				// Every other manual check requires a real attestation.
+				if item.ID == "scope" && item.Manual && !hasAnyAttestation(packet.Attestations, gateName, item.ID) {
 					packet.Attestations = appendAttestation(packet.Attestations, jobAttestation{Gate: gateName, Check: item.ID, Result: "passed", Note: "Leadfox scope check passed for the reviewed commit.", Actor: "Leadfox", RecordedAt: now})
 				}
 			}
@@ -1213,6 +1222,18 @@ func jobAttest(root, id string, o jobOptions) error {
 	}
 	if allVerified {
 		packet.Status = "review"
+	} else {
+		packet.Status = "review-failed"
+	}
+	if len(packet.ReviewRounds) > 0 {
+		last := &packet.ReviewRounds[len(packet.ReviewRounds)-1]
+		last.Evidence = append([]jobGateEvidence(nil), packet.GateEvidence...)
+		last.RecordedAt = packet.UpdatedAt
+		if allVerified {
+			last.Status = "review"
+		} else {
+			last.Status = "failed"
+		}
 	}
 	if err := writeJob(root, packet, body); err != nil {
 		return err

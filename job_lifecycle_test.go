@@ -24,6 +24,21 @@ func TestAttestationReplacementAndFailureRules(t *testing.T) {
 	}
 }
 
+func TestScopeAttestationDoesNotApproveOtherManualChecks(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "control"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "gates:\n  - id: integration\n    checks:\n      - id: scope\n        manual: true\n      - id: review-note\n        manual: true\n"
+	if err := os.WriteFile(filepath.Join(root, "control", "gates.yaml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	attestations := appendScopeAttestations(root, jobPacket{Gates: []string{"integration"}})
+	if len(attestations) != 1 || attestations[0].Check != "scope" {
+		t.Fatalf("unexpected automatic attestations: %+v", attestations)
+	}
+}
+
 func TestJobLifecycleCreatesReviewsApprovesAndMerges(t *testing.T) {
 	root := t.TempDir()
 	gitTest(t, root, "init", "-b", "main")
