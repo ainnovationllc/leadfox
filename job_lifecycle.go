@@ -57,38 +57,41 @@ Review creates a clean detached worktree, resolves commits to full IDs,
 checks scope, runs required gates, and records evidence before approval.
 `
 
+const evidenceSchemaVersion = 1
+
 type jobPacket struct {
-	ID                string              `yaml:"id"`
-	Status            string              `yaml:"status"`
-	Role              string              `yaml:"role"`
-	Objective         string              `yaml:"objective"`
-	BaseBranch        string              `yaml:"base_branch,omitempty"`
-	BaseCommit        string              `yaml:"base_commit,omitempty"`
-	Branch            string              `yaml:"branch,omitempty"`
-	BranchStartCommit string              `yaml:"branch_start_commit,omitempty"`
-	Worktree          string              `yaml:"worktree,omitempty"`
-	ReviewCommit      string              `yaml:"review_commit,omitempty"`
-	ReviewWorktree    string              `yaml:"review_worktree,omitempty"`
-	ReviewWorktrees   []string            `yaml:"review_worktrees,omitempty"`
-	AllowedPaths      []string            `yaml:"allowed_paths,omitempty"`
-	ExcludedPaths     []string            `yaml:"excluded_paths,omitempty"`
-	Gates             []string            `yaml:"gates,omitempty"`
-	CreatedAt         string              `yaml:"created_at,omitempty"`
-	UpdatedAt         string              `yaml:"updated_at,omitempty"`
-	GateEvidence      []jobGateEvidence   `yaml:"gate_evidence,omitempty"`
-	ReviewRounds      []jobReviewRound    `yaml:"review_rounds,omitempty"`
-	ReviewSetup       []string            `yaml:"review_setup,omitempty"`
-	Attestations      []jobAttestation    `yaml:"attestations,omitempty"`
-	RemovedWorktrees  []jobWorktreeRecord `yaml:"removed_worktrees,omitempty"`
-	ApprovedBy        string              `yaml:"approved_by,omitempty"`
-	ApprovedAt        string              `yaml:"approved_at,omitempty"`
-	MergeCommit       string              `yaml:"merge_commit,omitempty"`
-	TerminalReason    string              `yaml:"terminal_reason,omitempty"`
-	TerminalBy        string              `yaml:"terminal_by,omitempty"`
-	TerminalAt        string              `yaml:"terminal_at,omitempty"`
-	ResumeReason      string              `yaml:"resume_reason,omitempty"`
-	ResumeBy          string              `yaml:"resume_by,omitempty"`
-	ResumeAt          string              `yaml:"resume_at,omitempty"`
+	ID                 string              `yaml:"id"`
+	Status             string              `yaml:"status"`
+	Role               string              `yaml:"role"`
+	Objective          string              `yaml:"objective"`
+	BaseBranch         string              `yaml:"base_branch,omitempty"`
+	BaseCommit         string              `yaml:"base_commit,omitempty"`
+	Branch             string              `yaml:"branch,omitempty"`
+	BranchStartCommit  string              `yaml:"branch_start_commit,omitempty"`
+	Worktree           string              `yaml:"worktree,omitempty"`
+	ReviewCommit       string              `yaml:"review_commit,omitempty"`
+	ReviewWorktree     string              `yaml:"review_worktree,omitempty"`
+	ReviewWorktrees    []string            `yaml:"review_worktrees,omitempty"`
+	AllowedPaths       []string            `yaml:"allowed_paths,omitempty"`
+	ExcludedPaths      []string            `yaml:"excluded_paths,omitempty"`
+	Gates              []string            `yaml:"gates,omitempty"`
+	CreatedAt          string              `yaml:"created_at,omitempty"`
+	UpdatedAt          string              `yaml:"updated_at,omitempty"`
+	GateEvidence       []jobGateEvidence   `yaml:"gate_evidence,omitempty"`
+	ReviewRounds       []jobReviewRound    `yaml:"review_rounds,omitempty"`
+	ReviewSetup        []string            `yaml:"review_setup,omitempty"`
+	Attestations       []jobAttestation    `yaml:"attestations,omitempty"`
+	AttestationHistory []jobAttestation    `yaml:"attestation_history,omitempty"`
+	RemovedWorktrees   []jobWorktreeRecord `yaml:"removed_worktrees,omitempty"`
+	ApprovedBy         string              `yaml:"approved_by,omitempty"`
+	ApprovedAt         string              `yaml:"approved_at,omitempty"`
+	MergeCommit        string              `yaml:"merge_commit,omitempty"`
+	TerminalReason     string              `yaml:"terminal_reason,omitempty"`
+	TerminalBy         string              `yaml:"terminal_by,omitempty"`
+	TerminalAt         string              `yaml:"terminal_at,omitempty"`
+	ResumeReason       string              `yaml:"resume_reason,omitempty"`
+	ResumeBy           string              `yaml:"resume_by,omitempty"`
+	ResumeAt           string              `yaml:"resume_at,omitempty"`
 }
 
 type jobGateEvidence struct {
@@ -129,6 +132,7 @@ type jobReviewRound struct {
 }
 
 type gateEvidenceDocument struct {
+	SchemaVersion int              `yaml:"schema_version"`
 	Job           string           `yaml:"job"`
 	Round         int              `yaml:"round"`
 	Commit        string           `yaml:"commit"`
@@ -153,12 +157,13 @@ type setupResult struct {
 }
 
 type setupEvidenceDocument struct {
-	Job        string        `yaml:"job"`
-	Round      int           `yaml:"round"`
-	Commit     string        `yaml:"commit"`
-	RecordedAt string        `yaml:"recorded_at"`
-	Leadfox    string        `yaml:"leadfox"`
-	Setup      []setupResult `yaml:"setup"`
+	SchemaVersion int           `yaml:"schema_version"`
+	Job           string        `yaml:"job"`
+	Round         int           `yaml:"round"`
+	Commit        string        `yaml:"commit"`
+	RecordedAt    string        `yaml:"recorded_at"`
+	Leadfox       string        `yaml:"leadfox"`
+	Setup         []setupResult `yaml:"setup"`
 }
 
 type jobOptions struct {
@@ -658,7 +663,7 @@ func runJobGates(root string, packet jobPacket, worktree, commit string, setupEr
 				evidenceResult.Checks[index].OutputEncoding = "base64"
 			}
 		}
-		document := gateEvidenceDocument{Job: packet.ID, Round: round, Commit: commit, RecordedAt: time.Now().UTC().Format(time.RFC3339), Leadfox: leadfoxVersion(), SetupEvidence: setupPath, Attestations: packet.Attestations, Result: evidenceResult}
+		document := gateEvidenceDocument{SchemaVersion: evidenceSchemaVersion, Job: packet.ID, Round: round, Commit: commit, RecordedAt: time.Now().UTC().Format(time.RFC3339), Leadfox: leadfoxVersion(), SetupEvidence: setupPath, Attestations: packet.Attestations, Result: evidenceResult}
 		encoded, err := yaml.Marshal(document)
 		if err != nil {
 			return nil, fmt.Errorf("encode gate evidence: %w", err)
@@ -685,7 +690,7 @@ func writeSetupEvidence(root string, packet jobPacket, round int, commit string,
 	if len(setup) == 0 {
 		return "", "", nil
 	}
-	document := setupEvidenceDocument{Job: packet.ID, Round: round, Commit: commit, RecordedAt: time.Now().UTC().Format(time.RFC3339), Leadfox: leadfoxVersion(), Setup: setup}
+	document := setupEvidenceDocument{SchemaVersion: evidenceSchemaVersion, Job: packet.ID, Round: round, Commit: commit, RecordedAt: time.Now().UTC().Format(time.RFC3339), Leadfox: leadfoxVersion(), Setup: setup}
 	encoded, err := yaml.Marshal(document)
 	if err != nil {
 		return "", "", fmt.Errorf("encode setup evidence: %w", err)
@@ -757,6 +762,15 @@ func hasAnyAttestation(attestations []jobAttestation, gate, check string) bool {
 		}
 	}
 	return false
+}
+
+func currentAttestation(attestations []jobAttestation, gate, check string) (jobAttestation, bool) {
+	for _, attestation := range attestations {
+		if attestation.Gate == gate && attestation.Check == check {
+			return attestation, true
+		}
+	}
+	return jobAttestation{}, false
 }
 
 func appendAttestation(attestations []jobAttestation, value jobAttestation) []jobAttestation {
@@ -1031,6 +1045,10 @@ func jobApprove(root, id string, o jobOptions) error {
 		}
 		for _, evidence := range packet.GateEvidence {
 			if !evidence.Verified {
+				pending, pendingErr := pendingManualChecks(root, evidence)
+				if pendingErr == nil && len(pending) > 0 {
+					return fmt.Errorf("required gate %q is not verified; pending manual check(s): %s", evidence.Gate, strings.Join(pending, ", "))
+				}
 				return fmt.Errorf("required gate %q is not verified", evidence.Gate)
 			}
 		}
@@ -1060,7 +1078,13 @@ func jobApprove(root, id string, o jobOptions) error {
 	} else {
 		fmt.Fprintf(&record, "# Approval: %s\n", id)
 	}
-	fmt.Fprintf(&record, "\n## Round %d\n\n- Verdict: %s\n- Approved by: %s\n- Reviewed commit: `%s`\n- Review worktree: `%s`\n- Recorded: %s\n", len(packet.ReviewRounds), o.verdict, actor, packet.ReviewCommit, packet.ReviewWorktree, now)
+	fmt.Fprintf(&record, "\n## Round %d\n\n- Verdict: %s\n- Approved by: %s\n- Reviewed commit: `%s`\n", len(packet.ReviewRounds), o.verdict, actor, packet.ReviewCommit)
+	if packet.ReviewWorktree != "" {
+		if _, statErr := os.Stat(packet.ReviewWorktree); statErr == nil {
+			fmt.Fprintf(&record, "- Review worktree: `%s`\n", packet.ReviewWorktree)
+		}
+	}
+	fmt.Fprintf(&record, "- Recorded: %s\n", now)
 	if len(packet.GateEvidence) == 0 {
 		record.WriteString("- Required gates: none declared\n")
 	} else {
@@ -1092,6 +1116,24 @@ func jobApprove(root, id string, o jobOptions) error {
 	return nil
 }
 
+func pendingManualChecks(root string, evidence jobGateEvidence) ([]string, error) {
+	content, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(evidence.Evidence)))
+	if err != nil {
+		return nil, err
+	}
+	var document gateEvidenceDocument
+	if err := yaml.Unmarshal(content, &document); err != nil {
+		return nil, err
+	}
+	var pending []string
+	for _, check := range document.Result.Checks {
+		if check.Status == "manual" && !hasAttestation(document.Attestations, evidence.Gate, check.ID) {
+			pending = append(pending, evidence.Gate+"/"+check.ID)
+		}
+	}
+	return pending, nil
+}
+
 func verifyGateEvidence(root string, packet jobPacket) error {
 	latestRound := len(packet.ReviewRounds)
 	setupVerified := map[string]bool{}
@@ -1109,6 +1151,9 @@ func verifyGateEvidence(root string, packet jobPacket) error {
 			if err := yaml.Unmarshal(content, &setup); err != nil {
 				return fmt.Errorf("parse setup evidence: %w", err)
 			}
+			if setup.SchemaVersion != evidenceSchemaVersion {
+				return fmt.Errorf("setup evidence uses schema version %d; expected %d; regenerate the review evidence", setup.SchemaVersion, evidenceSchemaVersion)
+			}
 			if setup.Job != packet.ID || setup.Round != latestRound || setup.Commit != packet.ReviewCommit {
 				return errors.New("setup evidence does not match the reviewed job, round, or commit")
 			}
@@ -1125,6 +1170,9 @@ func verifyGateEvidence(root string, packet jobPacket) error {
 		var document gateEvidenceDocument
 		if err := yaml.Unmarshal(content, &document); err != nil {
 			return fmt.Errorf("parse evidence for gate %q: %w", evidence.Gate, err)
+		}
+		if document.SchemaVersion != evidenceSchemaVersion {
+			return fmt.Errorf("evidence for gate %q uses schema version %d; expected %d; regenerate the review evidence", evidence.Gate, document.SchemaVersion, evidenceSchemaVersion)
 		}
 		if document.Job != packet.ID || document.Round != latestRound || document.Commit != packet.ReviewCommit || document.Result.Gate != evidence.Gate {
 			return fmt.Errorf("required gate evidence %q does not match the reviewed job, round, commit, or gate", evidence.Gate)
@@ -1187,6 +1235,9 @@ func jobAttest(root, id string, o jobOptions) error {
 		return fmt.Errorf("check %s/%s has a failed attestation; create a new review round before attesting it as passed", gateName, checkName)
 	}
 	attestation := jobAttestation{Gate: gateName, Check: checkName, Result: o.result, Note: o.note, Actor: o.approvedBy, RecordedAt: time.Now().UTC().Format(time.RFC3339)}
+	if previous, found := currentAttestation(packet.Attestations, gateName, checkName); found {
+		packet.AttestationHistory = append(packet.AttestationHistory, previous)
+	}
 	packet.Attestations = appendAttestation(packet.Attestations, attestation)
 	packet.UpdatedAt = attestation.RecordedAt
 	for index, evidence := range packet.GateEvidence {
@@ -1200,6 +1251,9 @@ func jobAttest(root, id string, o jobOptions) error {
 		var document gateEvidenceDocument
 		if err := yaml.Unmarshal(content, &document); err != nil {
 			return fmt.Errorf("parse gate evidence %q: %w", evidence.Gate, err)
+		}
+		if document.SchemaVersion != evidenceSchemaVersion {
+			return fmt.Errorf("gate evidence %q uses schema version %d; regenerate the review evidence before attesting", evidence.Gate, document.SchemaVersion)
 		}
 		document.Attestations = packet.Attestations
 		updated, err := yaml.Marshal(document)
