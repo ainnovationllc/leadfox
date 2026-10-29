@@ -15,6 +15,7 @@ Usage:
 Commands:
   init <name>       Create a new Leadfox project
   plan              Create an architecture plan from requirements
+  gate run <name>   Execute a project gate and report evidence
   help              Show this help message
 
 Options:
@@ -23,6 +24,19 @@ Options:
 Init options:
   -p, --parent DIR  Create the project under DIR
   -n, --dry-run     Show planned changes without creating files
+`
+
+const gateHelpText = `Execute a project gate from control/gates.yaml.
+
+Usage:
+  leadfox gate run <gate-name> [options]
+
+Options:
+  -c, --check ID       Run only one check from the gate
+  -w, --worktree DIR   Execute from a project worktree
+  -f, --format FORMAT  Output markdown (default) or json
+  -t, --timeout D      Per-check timeout (default 10m)
+  -h, --help           Show this help message
 `
 
 const initHelpText = `Create a new Leadfox project.
@@ -59,6 +73,11 @@ func main() {
 		}
 	case "plan":
 		if err := runPlan(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(1)
+		}
+	case "gate":
+		if err := runGateCommand(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "Error:", err)
 			os.Exit(1)
 		}
@@ -216,6 +235,8 @@ planning prompt.
 Gather requirements and propose an architecture before implementing services.
 After requirements are confirmed, run leadfox plan from the project root and
 review its proposed architecture plan with the developer.
+Use leadfox gate run <gate-name> to execute trusted project gates and attach
+the resulting evidence to reviews. A gate result is evidence, not approval.
 Before implementation, reconcile the approved project model: service names,
 plan approval status, initial contracts, initial gates, environment settings,
 and secret references. Show the resulting change summary before writing code.
