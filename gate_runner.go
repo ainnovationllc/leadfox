@@ -47,15 +47,16 @@ type check struct {
 }
 
 type checkResult struct {
-	ID             string `json:"id" yaml:"id"`
-	Status         string `json:"status" yaml:"status"`
-	ExitCode       int    `json:"exit_code,omitempty" yaml:"exit_code,omitempty"`
-	DurationMS     int64  `json:"duration_ms,omitempty" yaml:"duration_ms,omitempty"`
-	Output         string `json:"output,omitempty" yaml:"output,omitempty"`
-	OutputText     string `json:"output_text,omitempty" yaml:"output_text,omitempty"`
-	OutputEncoding string `json:"output_encoding,omitempty" yaml:"output_encoding,omitempty"`
-	Reason         string `json:"reason,omitempty" yaml:"reason,omitempty"`
-	Attestation    string `json:"attestation,omitempty" yaml:"attestation,omitempty"`
+	ID             string   `json:"id" yaml:"id"`
+	Status         string   `json:"status" yaml:"status"`
+	ExitCode       int      `json:"exit_code,omitempty" yaml:"exit_code,omitempty"`
+	DurationMS     int64    `json:"duration_ms,omitempty" yaml:"duration_ms,omitempty"`
+	Output         string   `json:"output,omitempty" yaml:"output,omitempty"`
+	OutputText     string   `json:"output_text,omitempty" yaml:"output_text,omitempty"`
+	OutputLines    []string `json:"output_lines,omitempty" yaml:"output_lines,omitempty"`
+	OutputEncoding string   `json:"output_encoding,omitempty" yaml:"output_encoding,omitempty"`
+	Reason         string   `json:"reason,omitempty" yaml:"reason,omitempty"`
+	Attestation    string   `json:"attestation,omitempty" yaml:"attestation,omitempty"`
 }
 
 type gateResult struct {

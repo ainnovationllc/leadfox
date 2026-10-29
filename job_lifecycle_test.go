@@ -41,16 +41,16 @@ func TestScopeAttestationDoesNotApproveOtherManualChecks(t *testing.T) {
 	}
 }
 
-func TestEvidenceOutputTextPreservesLeadingBlankLines(t *testing.T) {
+func TestEvidenceOutputLinesPreserveLeadingBlankLines(t *testing.T) {
 	document := gateEvidenceDocument{
 		SchemaVersion: evidenceSchemaVersion,
 		Job:           "JOB-OUTPUT",
 		Round:         1,
 		Commit:        "abc",
 		Result: gateResult{Checks: []checkResult{{
-			ID:         "probe",
-			Output:     "Cg p",
-			OutputText: "\n\n  probe: readable\n",
+			ID:          "probe",
+			Output:      "Cg p",
+			OutputLines: []string{"", "", "  probe: readable", ""},
 		}}},
 	}
 	encoded, err := yaml.Marshal(document)
@@ -61,8 +61,8 @@ func TestEvidenceOutputTextPreservesLeadingBlankLines(t *testing.T) {
 	if err := yaml.Unmarshal(encoded, &decoded); err != nil {
 		t.Fatalf("evidence YAML did not round-trip: %v\n%s", err, encoded)
 	}
-	if !strings.Contains(decoded.Result.Checks[0].OutputText, "probe: readable") {
-		t.Fatalf("output text was not readable after round-trip: %q", decoded.Result.Checks[0].OutputText)
+	if len(decoded.Result.Checks[0].OutputLines) != 4 || decoded.Result.Checks[0].OutputLines[2] != "  probe: readable" {
+		t.Fatalf("output lines were not readable after round-trip: %#v", decoded.Result.Checks[0].OutputLines)
 	}
 }
 

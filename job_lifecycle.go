@@ -56,7 +56,7 @@ Review creates a clean detached worktree, resolves commits to full IDs,
 checks scope, runs required gates, and records evidence before approval.
 `
 
-const evidenceSchemaVersion = 1
+const evidenceSchemaVersion = 2
 
 type jobPacket struct {
 	ID                 string              `yaml:"id"`
@@ -153,6 +153,7 @@ type setupResult struct {
 	ExitCode       int       `yaml:"exit_code"`
 	Output         string    `yaml:"output,omitempty"`
 	OutputText     string    `yaml:"output_text,omitempty"`
+	OutputLines    []string  `yaml:"output_lines,omitempty"`
 	OutputEncoding string    `yaml:"output_encoding,omitempty"`
 	Reason         string    `yaml:"reason,omitempty"`
 }
@@ -596,7 +597,7 @@ func runReviewSetup(worktree string, commands []string, timeout time.Duration) (
 		output, err := command.CombinedOutput()
 		redactedOutput := redactGateOutput(string(output))
 		result.Output = base64.StdEncoding.EncodeToString([]byte(redactedOutput))
-		result.OutputText = redactedOutput
+		result.OutputLines = strings.Split(redactedOutput, "\n")
 		result.OutputEncoding = "base64"
 		result.FinishedAt = time.Now().UTC()
 		result.DurationMS = result.FinishedAt.Sub(started).Milliseconds()
@@ -663,7 +664,7 @@ func runJobGates(root string, packet jobPacket, worktree, commit string, setupEr
 			if evidenceResult.Checks[index].Output != "" {
 				rawOutput := evidenceResult.Checks[index].Output
 				evidenceResult.Checks[index].Output = base64.StdEncoding.EncodeToString([]byte(rawOutput))
-				evidenceResult.Checks[index].OutputText = rawOutput
+				evidenceResult.Checks[index].OutputLines = strings.Split(rawOutput, "\n")
 				evidenceResult.Checks[index].OutputEncoding = "base64"
 			}
 		}
@@ -683,7 +684,7 @@ func runJobGates(root string, packet jobPacket, worktree, commit string, setupEr
 		results = append(results, jobGateEvidence{Gate: gateName, Status: result.Status, Verified: verified, Commit: commit, Evidence: filepath.ToSlash(relative), Hash: hex.EncodeToString(hash[:]), RecordedAt: document.RecordedAt, SetupEvidence: setupPath, SetupHash: setupHash})
 		if !verified {
 			if firstErr == nil {
-				firstErr = fmt.Errorf("required gate %q did not verify: %s", gateName, gateResultReason(result, gateName))
+				firstErr = fmt.Errorf("required gate %q did not verify: %s", gateName, gateResultReason(result, gateName, packet))
 			}
 		}
 	}
@@ -728,13 +729,15 @@ func gateResultVerified(result gateResult, gateName string, packet jobPacket) bo
 	return result.Status == "passed" || result.Status == "manual"
 }
 
-func gateResultReason(result gateResult, gateName string) string {
+func gateResultReason(result gateResult, gateName string, packet jobPacket) string {
 	for _, item := range result.Checks {
 		if item.Status == "failed" {
 			return item.ID + " failed"
 		}
 		if item.Status == "manual" {
-			return gateName + "/" + item.ID + " requires explicit attestation"
+			if !hasAttestation(packet.Attestations, gateName, item.ID) {
+				return gateName + "/" + item.ID + " requires explicit attestation"
+			}
 		}
 	}
 	return "manual or deferred checks require explicit attestation"
