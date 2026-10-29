@@ -81,6 +81,7 @@ type jobPacket struct {
 	ReviewSetup        []string            `yaml:"review_setup,omitempty"`
 	Attestations       []jobAttestation    `yaml:"attestations,omitempty"`
 	AttestationHistory []jobAttestation    `yaml:"attestation_history,omitempty"`
+	Transitions        []jobTransition     `yaml:"transitions,omitempty"`
 	RemovedWorktrees   []jobWorktreeRecord `yaml:"removed_worktrees,omitempty"`
 	ApprovedBy         string              `yaml:"approved_by,omitempty"`
 	ApprovedAt         string              `yaml:"approved_at,omitempty"`
@@ -91,6 +92,14 @@ type jobPacket struct {
 	ResumeReason       string              `yaml:"resume_reason,omitempty"`
 	ResumeBy           string              `yaml:"resume_by,omitempty"`
 	ResumeAt           string              `yaml:"resume_at,omitempty"`
+}
+
+type jobTransition struct {
+	From       string `yaml:"from"`
+	To         string `yaml:"to"`
+	Reason     string `yaml:"reason,omitempty"`
+	Actor      string `yaml:"actor"`
+	RecordedAt string `yaml:"recorded_at"`
 }
 
 type jobGateEvidence struct {
@@ -1050,6 +1059,11 @@ func reviewEvidenceState(root string, evidence []jobGateEvidence) evidenceState 
 		if document.Result.Status == "failed" || document.Result.Status == "deferred" {
 			state.Failed = true
 		}
+		for _, check := range document.Result.Checks {
+			if check.Status == "failed" || check.Status == "deferred" {
+				state.Failed = true
+			}
+		}
 		if len(document.Result.Checks) > 0 {
 			checks, err := pendingManualChecks(root, item)
 			if err == nil && len(checks) > 0 {
@@ -1106,6 +1120,7 @@ func jobApprove(root, id string, o jobOptions) error {
 			return errors.New("required gate evidence is missing; review the job before approval")
 		}
 		var pending []string
+		var failed []string
 		var unverified []string
 		for _, evidence := range packet.GateEvidence {
 			if evidence.Verified {
@@ -1115,9 +1130,16 @@ func jobApprove(root, id string, o jobOptions) error {
 			if pendingErr == nil {
 				pending = append(pending, checks...)
 			}
-			if len(checks) == 0 {
+			failedChecks, failedErr := failedManualChecks(root, evidence)
+			if failedErr == nil {
+				failed = append(failed, failedChecks...)
+			}
+			if len(checks) == 0 && len(failedChecks) == 0 {
 				unverified = append(unverified, evidence.Gate)
 			}
+		}
+		if len(failed) > 0 {
+			return fmt.Errorf("failed manual check(s): %s; pending manual check(s): %s", strings.Join(failed, ", "), strings.Join(pending, ", "))
 		}
 		if len(pending) > 0 {
 			return fmt.Errorf("pending manual check(s): %s", strings.Join(pending, ", "))
@@ -1200,11 +1222,29 @@ func pendingManualChecks(root string, evidence jobGateEvidence) ([]string, error
 	}
 	var pending []string
 	for _, check := range document.Result.Checks {
-		if check.Status == "manual" && !hasAttestation(document.Attestations, evidence.Gate, check.ID) {
+		if check.Status == "manual" && !hasAttestation(document.Attestations, evidence.Gate, check.ID) && !hasFailedAttestation(document.Attestations, evidence.Gate, check.ID) {
 			pending = append(pending, evidence.Gate+"/"+check.ID)
 		}
 	}
 	return pending, nil
+}
+
+func failedManualChecks(root string, evidence jobGateEvidence) ([]string, error) {
+	content, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(evidence.Evidence)))
+	if err != nil {
+		return nil, err
+	}
+	var document gateEvidenceDocument
+	if err := yaml.Unmarshal(content, &document); err != nil {
+		return nil, err
+	}
+	var failed []string
+	for _, check := range document.Result.Checks {
+		if check.Status == "manual" && hasFailedAttestation(document.Attestations, evidence.Gate, check.ID) {
+			failed = append(failed, evidence.Gate+"/"+check.ID)
+		}
+	}
+	return failed, nil
 }
 
 func verifyGateEvidence(root string, packet jobPacket) error {
@@ -1356,18 +1396,27 @@ func jobAttest(root, id string, o jobOptions) error {
 			allVerified = allVerified && evidence.Verified
 		}
 	}
-	if allVerified {
+	state := reviewEvidenceState(root, packet.GateEvidence)
+	switch {
+	case allVerified:
 		packet.Status = "review"
-	} else {
+	case state.Failed:
+		packet.Status = "review-failed"
+	case state.Pending:
+		packet.Status = "review-pending"
+	default:
 		packet.Status = "review-failed"
 	}
 	if len(packet.ReviewRounds) > 0 {
 		last := &packet.ReviewRounds[len(packet.ReviewRounds)-1]
 		last.Evidence = append([]jobGateEvidence(nil), packet.GateEvidence...)
 		last.RecordedAt = packet.UpdatedAt
-		if allVerified {
+		switch packet.Status {
+		case "review":
 			last.Status = "review"
-		} else {
+		case "review-pending":
+			last.Status = "pending"
+		default:
 			last.Status = "failed"
 		}
 	}
@@ -1407,6 +1456,7 @@ func jobTerminate(root, id, status string, o jobOptions) error {
 		return errors.New("--actor is required for a lifecycle transition")
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
+	appendTransition(&packet, status, o.reason, actor, now)
 	packet.Status, packet.TerminalReason, packet.TerminalBy, packet.TerminalAt, packet.UpdatedAt = status, o.reason, actor, now, now
 	if err := writeJob(root, packet, body); err != nil {
 		return err
@@ -1465,6 +1515,7 @@ func jobResume(root, id string, o jobOptions) error {
 	}
 	packet.Status = "running"
 	now := time.Now().UTC().Format(time.RFC3339)
+	appendTransition(&packet, "running", o.reason, actor, now)
 	packet.ResumeReason, packet.ResumeBy, packet.ResumeAt = o.reason, actor, now
 	packet.UpdatedAt = now
 	if err := writeJob(root, packet, body); err != nil {
@@ -1475,6 +1526,10 @@ func jobResume(root, id string, o jobOptions) error {
 	}
 	fmt.Printf("Resumed %s by %s\n", id, actor)
 	return nil
+}
+
+func appendTransition(packet *jobPacket, to, reason, actor, recordedAt string) {
+	packet.Transitions = append(packet.Transitions, jobTransition{From: packet.Status, To: to, Reason: reason, Actor: actor, RecordedAt: recordedAt})
 }
 
 func jobMerge(root, id string) error {

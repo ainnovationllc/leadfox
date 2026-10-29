@@ -66,6 +66,74 @@ func TestEvidenceOutputLinesPreserveLeadingBlankLines(t *testing.T) {
 	}
 }
 
+func TestReviewEvidenceStateDistinguishesPendingAndFailedManualChecks(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "control", "evidence"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	evidencePath := filepath.Join("control", "evidence", "JOB-STATE.yaml")
+	document := gateEvidenceDocument{
+		SchemaVersion: evidenceSchemaVersion,
+		Job:           "JOB-STATE",
+		Round:         1,
+		Result: gateResult{Gate: "local-dev", Status: "manual", Checks: []checkResult{
+			{ID: "review-note", Status: "manual"},
+		}},
+		Attestations: []jobAttestation{{Gate: "local-dev", Check: "review-note", Result: "passed"}},
+	}
+	encoded, err := yaml.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, filepath.FromSlash(evidencePath)), encoded, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	state := reviewEvidenceState(root, []jobGateEvidence{{Gate: "local-dev", Evidence: evidencePath}})
+	if state.Pending || state.Failed {
+		t.Fatalf("passed manual check incorrectly remained unresolved: %+v", state)
+	}
+	document.Attestations = nil
+	encoded, err = yaml.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, filepath.FromSlash(evidencePath)), encoded, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	state = reviewEvidenceState(root, []jobGateEvidence{{Gate: "local-dev", Evidence: evidencePath}})
+	if !state.Pending || state.Failed {
+		t.Fatalf("unattested manual check was not pending: %+v", state)
+	}
+	document.Attestations = []jobAttestation{{Gate: "local-dev", Check: "review-note", Result: "failed"}}
+	document.Result.Status = "failed"
+	encoded, err = yaml.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, filepath.FromSlash(evidencePath)), encoded, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	state = reviewEvidenceState(root, []jobGateEvidence{{Gate: "local-dev", Evidence: evidencePath}})
+	if state.Pending || !state.Failed {
+		t.Fatalf("failed manual check was not failed: %+v", state)
+	}
+}
+
+func TestLifecycleTransitionsPreserveHistory(t *testing.T) {
+	packet := jobPacket{Status: "running"}
+	appendTransition(&packet, "blocked", "waiting for review", "Control", "2026-10-29T00:00:00Z")
+	packet.Status = "blocked"
+	appendTransition(&packet, "running", "dependency available", "Control", "2026-10-29T00:01:00Z")
+	packet.Status = "running"
+	appendTransition(&packet, "cancelled", "superseded", "Control", "2026-10-29T00:02:00Z")
+	if len(packet.Transitions) != 3 {
+		t.Fatalf("transition history was not preserved: %+v", packet.Transitions)
+	}
+	if packet.Transitions[0].From != "running" || packet.Transitions[0].To != "blocked" || packet.Transitions[1].From != "blocked" || packet.Transitions[2].To != "cancelled" {
+		t.Fatalf("unexpected transition history: %+v", packet.Transitions)
+	}
+}
+
 func TestJobLifecycleCreatesReviewsApprovesAndMerges(t *testing.T) {
 	root := t.TempDir()
 	gitTest(t, root, "init", "-b", "main")
