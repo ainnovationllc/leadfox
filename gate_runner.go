@@ -47,21 +47,22 @@ type check struct {
 }
 
 type checkResult struct {
-	ID         string `json:"id"`
-	Status     string `json:"status"`
-	ExitCode   int    `json:"exit_code,omitempty"`
-	DurationMS int64  `json:"duration_ms,omitempty"`
-	Output     string `json:"output,omitempty"`
-	Reason     string `json:"reason,omitempty"`
+	ID             string `json:"id" yaml:"id"`
+	Status         string `json:"status" yaml:"status"`
+	ExitCode       int    `json:"exit_code,omitempty" yaml:"exit_code,omitempty"`
+	DurationMS     int64  `json:"duration_ms,omitempty" yaml:"duration_ms,omitempty"`
+	Output         string `json:"output,omitempty" yaml:"output,omitempty"`
+	OutputEncoding string `json:"output_encoding,omitempty" yaml:"output_encoding,omitempty"`
+	Reason         string `json:"reason,omitempty" yaml:"reason,omitempty"`
 }
 
 type gateResult struct {
-	Gate       string        `json:"gate"`
-	Worktree   string        `json:"worktree"`
-	StartedAt  time.Time     `json:"started_at"`
-	FinishedAt time.Time     `json:"finished_at"`
-	Status     string        `json:"status"`
-	Checks     []checkResult `json:"checks"`
+	Gate       string        `json:"gate" yaml:"gate"`
+	Worktree   string        `json:"worktree" yaml:"worktree"`
+	StartedAt  time.Time     `json:"started_at" yaml:"started_at"`
+	FinishedAt time.Time     `json:"finished_at" yaml:"finished_at"`
+	Status     string        `json:"status" yaml:"status"`
+	Checks     []checkResult `json:"checks" yaml:"checks"`
 }
 
 func runGateCommand(args []string) error {
