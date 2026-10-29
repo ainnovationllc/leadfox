@@ -29,6 +29,7 @@ Usage:
   leadfox job attest <id> --check GATE/CHECK --result passed [--note TEXT]
   leadfox job cancel <id> --reason TEXT
   leadfox job block <id> --reason TEXT
+  leadfox job list
   leadfox job merge <id>
 
 Options:
@@ -156,12 +157,15 @@ func runJobCommand(args []string) error {
 		fmt.Print(jobHelpText)
 		return nil
 	}
-	if id == "" {
-		return errors.New("a job ID is required; use 'leadfox job --help' for usage")
-	}
 	root, err := gitRoot(".")
 	if err != nil {
 		return err
+	}
+	if id == "" {
+		if operation == "list" {
+			return jobList(root)
+		}
+		return errors.New("a job ID is required; use 'leadfox job --help' for usage")
 	}
 	switch operation {
 	case "new":
@@ -180,11 +184,34 @@ func runJobCommand(args []string) error {
 		return jobTerminate(root, id, "cancelled", options)
 	case "block":
 		return jobTerminate(root, id, "blocked", options)
+	case "list":
+		return jobList(root)
 	case "merge":
 		return jobMerge(root, id)
 	default:
 		return fmt.Errorf("unknown job operation %q; use 'leadfox job --help' for usage", operation)
 	}
+}
+
+func jobList(root string) error {
+	directory := filepath.Join(root, "control", "jobs")
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return fmt.Errorf("read job directory: %w", err)
+	}
+	fmt.Println("JOB\tSTATUS\tBRANCH\tUPDATED")
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") || entry.Name() == "README.md" {
+			continue
+		}
+		id := strings.TrimSuffix(entry.Name(), ".md")
+		packet, _, readErr := readJob(root, id)
+		if readErr != nil {
+			return readErr
+		}
+		fmt.Printf("%s\t%s\t%s\t%s\n", packet.ID, packet.Status, packet.Branch, packet.UpdatedAt)
+	}
+	return nil
 }
 
 func parseJobOptions(args []string) (jobOptions, string, error) {
