@@ -101,7 +101,7 @@ Build the service skeleton.
 	if err := os.WriteFile(filepath.Join(root, "control", "gates.yaml"), []byte("gates:\n  - id: unit\n    checks:\n      - id: scope\n        manual: true\n      - id: packet\n        run: test -f review-ready && test -f control/project.yaml\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "control", "project.yaml"), []byte("project:\n  name: test\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "control", "project.yaml"), []byte("project:\n  name: test\n  commit_trailers:\n    - \"Co-Authored-By: Test Agent <agent@example.test>\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "services", "example", "README.md"), []byte("initial\n"), 0o644); err != nil {
@@ -210,6 +210,10 @@ Build the service skeleton.
 	mergedPacket, _, err := readJob(root, "JOB-001")
 	if err != nil {
 		t.Fatal(err)
+	}
+	mergeBody := gitTest(t, root, "show", "-s", "--format=%B", mergedPacket.MergeCommit)
+	if !strings.Contains(mergeBody, "Leadfox-Project: test") || !strings.Contains(mergeBody, "Co-Authored-By: Test Agent <agent@example.test>") {
+		t.Fatalf("configured lifecycle trailer missing: %s", mergeBody)
 	}
 	if mergedPacket.MergeCommit == "" {
 		t.Fatal("merge commit was not recorded")

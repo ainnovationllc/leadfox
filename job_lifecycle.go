@@ -116,6 +116,11 @@ type jobAttestation struct {
 	ReplacedBy string `yaml:"replaced_by,omitempty"`
 }
 
+type evidenceState struct {
+	Pending bool
+	Failed  bool
+}
+
 type jobWorktreeRecord struct {
 	Path      string `yaml:"path"`
 	RemovedAt string `yaml:"removed_at"`
@@ -856,7 +861,8 @@ func lifecycleCommitBody(root, operation string) string {
 		var metadata struct {
 			Name    string `yaml:"name"`
 			Project struct {
-				Name string `yaml:"name"`
+				Name           string   `yaml:"name"`
+				CommitTrailers []string `yaml:"commit_trailers,omitempty"`
 			} `yaml:"project"`
 		}
 		if yaml.Unmarshal(content, &metadata) == nil && strings.TrimSpace(metadata.Name) != "" {
@@ -864,6 +870,17 @@ func lifecycleCommitBody(root, operation string) string {
 		} else if strings.TrimSpace(metadata.Project.Name) != "" {
 			project = strings.TrimSpace(metadata.Project.Name)
 		}
+		trailers := metadata.Project.CommitTrailers
+		var trailerText strings.Builder
+		for _, trailer := range trailers {
+			trailer = strings.TrimSpace(trailer)
+			if trailer == "" || strings.ContainsAny(trailer, "\r\n") {
+				continue
+			}
+			trailerText.WriteString("\n")
+			trailerText.WriteString(trailer)
+		}
+		return "Recorded by Leadfox lifecycle management.\n\nLeadfox-Managed: true\nLeadfox-Project: " + project + "\nLeadfox-Operation: " + operation + trailerText.String()
 	}
 	return "Recorded by Leadfox lifecycle management.\n\nLeadfox-Managed: true\nLeadfox-Project: " + project + "\nLeadfox-Operation: " + operation
 }
@@ -977,8 +994,15 @@ func jobReview(root, id string, o jobOptions) error {
 	roundStatus := "review"
 	packetStatus := "review"
 	if reviewErr != nil {
-		roundStatus = "failed"
-		packetStatus = "review-failed"
+		state := reviewEvidenceState(root, evidence)
+		if setupErr == nil && state.Pending && !state.Failed {
+			roundStatus = "pending"
+			packetStatus = "review-pending"
+			reviewErr = nil
+		} else {
+			roundStatus = "failed"
+			packetStatus = "review-failed"
+		}
 	}
 	round := jobReviewRound{Number: len(packet.ReviewRounds) + 1, Commit: commit, Status: roundStatus, Reason: o.reason, RecordedAt: time.Now().UTC().Format(time.RFC3339), Evidence: evidence}
 	packet.Status, packet.ReviewCommit, packet.ReviewWorktree, packet.UpdatedAt = packetStatus, commit, worktree, time.Now().UTC().Format(time.RFC3339)
@@ -1002,8 +1026,38 @@ func jobReview(root, id string, o jobOptions) error {
 		_, _ = gitOutput(root, "worktree", "remove", "--force", worktree)
 		return reviewErr
 	}
+	if packetStatus == "review-pending" {
+		fmt.Printf("Review pending manual attestations for %s\n", id)
+		return nil
+	}
 	fmt.Printf("Created review worktree for %s at %s\n", id, worktree)
 	return nil
+}
+
+func reviewEvidenceState(root string, evidence []jobGateEvidence) evidenceState {
+	state := evidenceState{}
+	for _, item := range evidence {
+		content, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(item.Evidence)))
+		if err != nil {
+			state.Failed = true
+			continue
+		}
+		var document gateEvidenceDocument
+		if yaml.Unmarshal(content, &document) != nil {
+			state.Failed = true
+			continue
+		}
+		if document.Result.Status == "failed" || document.Result.Status == "deferred" {
+			state.Failed = true
+		}
+		if len(document.Result.Checks) > 0 {
+			checks, err := pendingManualChecks(root, item)
+			if err == nil && len(checks) > 0 {
+				state.Pending = true
+			}
+		}
+	}
+	return state
 }
 
 func appendScopeAttestations(worktree string, packet jobPacket) []jobAttestation {
@@ -1038,7 +1092,7 @@ func jobApprove(root, id string, o jobOptions) error {
 	if err != nil {
 		return err
 	}
-	if packet.Status != "review" && packet.Status != "review-failed" {
+	if packet.Status != "review" && packet.Status != "review-pending" && packet.Status != "review-failed" {
 		return fmt.Errorf("job %s is %q; create a review worktree first", id, packet.Status)
 	}
 	if o.verdict != "accepted" && o.verdict != "changes-requested" {
@@ -1051,14 +1105,25 @@ func jobApprove(root, id string, o jobOptions) error {
 		if len(packet.GateEvidence) != len(packet.Gates) {
 			return errors.New("required gate evidence is missing; review the job before approval")
 		}
+		var pending []string
+		var unverified []string
 		for _, evidence := range packet.GateEvidence {
-			if !evidence.Verified {
-				pending, pendingErr := pendingManualChecks(root, evidence)
-				if pendingErr == nil && len(pending) > 0 {
-					return fmt.Errorf("required gate %q is not verified; pending manual check(s): %s", evidence.Gate, strings.Join(pending, ", "))
-				}
-				return fmt.Errorf("required gate %q is not verified", evidence.Gate)
+			if evidence.Verified {
+				continue
 			}
+			checks, pendingErr := pendingManualChecks(root, evidence)
+			if pendingErr == nil {
+				pending = append(pending, checks...)
+			}
+			if len(checks) == 0 {
+				unverified = append(unverified, evidence.Gate)
+			}
+		}
+		if len(pending) > 0 {
+			return fmt.Errorf("pending manual check(s): %s", strings.Join(pending, ", "))
+		}
+		if len(unverified) > 0 {
+			return fmt.Errorf("required gate(s) not verified: %s", strings.Join(unverified, ", "))
 		}
 		if err := verifyGateEvidence(root, packet); err != nil {
 			return err
@@ -1205,7 +1270,7 @@ func jobAttest(root, id string, o jobOptions) error {
 	if err != nil {
 		return err
 	}
-	if packet.Status != "review" && packet.Status != "review-failed" {
+	if packet.Status != "review" && packet.Status != "review-pending" && packet.Status != "review-failed" {
 		return fmt.Errorf("job %s is %q; attestations require a review result", id, packet.Status)
 	}
 	if o.check == "" {

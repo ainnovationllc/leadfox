@@ -254,6 +254,9 @@ Do not commit secrets or modify unrelated services.
 		"control/project.yaml": fmt.Sprintf(`project:
   name: %s
   version: 1
+  # Optional trailers added to Leadfox-managed commits.
+  # commit_trailers:
+  #   - "Co-Authored-By: Example <example@example.test>"
 
 services: []
 external_dependencies: []
