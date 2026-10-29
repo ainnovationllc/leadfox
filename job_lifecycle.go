@@ -1401,16 +1401,20 @@ func jobAttest(root, id string, o jobOptions) error {
 		}
 	}
 	state := reviewEvidenceState(root, packet.GateEvidence)
+	previousStatus := packet.Status
+	nextStatus := "review-failed"
 	switch {
 	case allVerified:
-		packet.Status = "review"
+		nextStatus = "review"
 	case state.Failed:
-		packet.Status = "review-failed"
+		nextStatus = "review-failed"
 	case state.Pending:
-		packet.Status = "review-pending"
-	default:
-		packet.Status = "review-failed"
+		nextStatus = "review-pending"
 	}
+	if previousStatus != nextStatus {
+		appendTransition(&packet, nextStatus, "attestation "+o.check, o.approvedBy, packet.UpdatedAt)
+	}
+	packet.Status = nextStatus
 	if len(packet.ReviewRounds) > 0 {
 		last := &packet.ReviewRounds[len(packet.ReviewRounds)-1]
 		last.Evidence = append([]jobGateEvidence(nil), packet.GateEvidence...)
