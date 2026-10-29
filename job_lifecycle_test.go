@@ -24,6 +24,7 @@ objective: Build the service skeleton.
 base_branch: main
 allowed_paths:
   - services/example/**
+  - control/handoffs/JOB-001.md
 gates:
   - unit
 review_setup:
@@ -64,6 +65,12 @@ Build the service skeleton.
 	}
 	changed := filepath.Join(jobWorktree, "services", "example", "service.go")
 	if err := os.WriteFile(changed, []byte("package example\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(jobWorktree, "control", "handoffs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(jobWorktree, "control", "handoffs", "JOB-001.md"), []byte("# JOB-001 handoff\n\nComplete.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	gitTest(t, jobWorktree, "add", ".")

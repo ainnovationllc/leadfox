@@ -833,6 +833,10 @@ func jobApprove(root, id string, o jobOptions) error {
 			return err
 		}
 	}
+	handoffPath := filepath.ToSlash(filepath.Join("control", "handoffs", id+".md"))
+	if _, err := gitOutput(root, "cat-file", "-e", packet.ReviewCommit+":"+handoffPath); err != nil {
+		return fmt.Errorf("reviewed commit does not contain required handoff %s", handoffPath)
+	}
 	dir := filepath.Join(root, "control", "approvals")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
@@ -864,6 +868,7 @@ func jobApprove(root, id string, o jobOptions) error {
 		fmt.Fprintf(&record, "- Note: %s\n", o.note)
 	}
 	record.WriteString("\nControl review evidence is recorded in the referenced gate evidence files.\n")
+	fmt.Fprintf(&record, "Handoff: `%s`\n", handoffPath)
 	if err := os.WriteFile(path, []byte(record.String()), 0o644); err != nil {
 		return err
 	}
@@ -1019,6 +1024,7 @@ func jobTerminate(root, id, status string, o jobOptions) error {
 		packet.RemovedWorktrees = append(packet.RemovedWorktrees, jobWorktreeRecord{Path: path, RemovedAt: now})
 	}
 	packet.Worktree, packet.ReviewWorktree = "", ""
+	packet.ReviewWorktrees = nil
 	if err := writeJob(root, packet, body); err != nil {
 		return err
 	}
@@ -1080,6 +1086,7 @@ func jobMerge(root, id string) error {
 		}
 	}
 	packet.Worktree, packet.ReviewWorktree = "", ""
+	packet.ReviewWorktrees = nil
 	if err := writeJob(root, packet, body); err != nil {
 		return err
 	}
