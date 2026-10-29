@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -85,6 +86,9 @@ type jobPacket struct {
 	TerminalReason    string              `yaml:"terminal_reason,omitempty"`
 	TerminalBy        string              `yaml:"terminal_by,omitempty"`
 	TerminalAt        string              `yaml:"terminal_at,omitempty"`
+	ResumeReason      string              `yaml:"resume_reason,omitempty"`
+	ResumeBy          string              `yaml:"resume_by,omitempty"`
+	ResumeAt          string              `yaml:"resume_at,omitempty"`
 }
 
 type jobGateEvidence struct {
@@ -143,6 +147,7 @@ type setupResult struct {
 	DurationMS     int64     `yaml:"duration_ms"`
 	ExitCode       int       `yaml:"exit_code"`
 	Output         string    `yaml:"output,omitempty"`
+	OutputText     string    `yaml:"output_text,omitempty"`
 	OutputEncoding string    `yaml:"output_encoding,omitempty"`
 	Reason         string    `yaml:"reason,omitempty"`
 }
@@ -491,7 +496,11 @@ func jobStart(root, id string, o jobOptions) error {
 	if err != nil {
 		return fmt.Errorf("resolve base: %w", err)
 	}
-	packet.Status, packet.BaseBranch, packet.BaseCommit, packet.Branch, packet.Worktree, packet.UpdatedAt = "running", base, strings.TrimSpace(baseCommit), branch, worktree, time.Now().UTC().Format(time.RFC3339)
+	baseCommit = strings.TrimSpace(baseCommit)
+	if _, err := gitOutput(root, "worktree", "add", "-b", branch, worktree, baseCommit); err != nil {
+		return fmt.Errorf("create job worktree: %w", err)
+	}
+	packet.Status, packet.BaseBranch, packet.BaseCommit, packet.Branch, packet.BranchStartCommit, packet.Worktree, packet.UpdatedAt = "running", base, baseCommit, branch, baseCommit, worktree, time.Now().UTC().Format(time.RFC3339)
 	if err := writeJob(root, packet, body); err != nil {
 		return err
 	}
@@ -502,25 +511,11 @@ func jobStart(root, id string, o jobOptions) error {
 	if err != nil {
 		return fmt.Errorf("resolve start record: %w", err)
 	}
-	if _, err := gitOutput(root, "worktree", "add", "-b", branch, worktree, startCommit); err != nil {
-		return fmt.Errorf("create job worktree: %w", err)
-	}
-	packet.BranchStartCommit = strings.TrimSpace(startCommit)
-	packet.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	if err := writeJob(root, packet, body); err != nil {
-		return err
-	}
-	if err := writeJob(worktree, packet, body); err != nil {
-		return err
-	}
-	if _, err := gitOutput(worktree, "add", "--", filepath.ToSlash(filepath.Join("control", "jobs", id+".md"))); err != nil {
-		return fmt.Errorf("stage branch packet: %w", err)
-	}
-	if _, err := gitOutput(worktree, "commit", "-m", "Record branch start "+id, "-m", lifecycleCommitBody(worktree, "branch-start")); err != nil {
-		return fmt.Errorf("commit branch packet: %w", err)
-	}
-	if err := commitLifecycleRecord(root, []string{jobPath(root, id)}, "Record branch start "+id); err != nil {
-		return err
+	// The branch was created at BaseCommit. Fast-forward it to the shared
+	// lifecycle commit so the job packet is clean and the start record is not
+	// duplicated when the branch is merged.
+	if _, err := gitOutput(worktree, "merge", "--ff-only", startCommit); err != nil {
+		return fmt.Errorf("advance job worktree to start record: %w", err)
 	}
 	fmt.Printf("Started %s on %s at %s\n", id, branch, worktree)
 	return nil
@@ -593,7 +588,9 @@ func runReviewSetup(worktree string, commands []string, timeout time.Duration) (
 		command := exec.CommandContext(ctx, "bash", "-c", commandText)
 		command.Dir = worktree
 		output, err := command.CombinedOutput()
-		result.Output = base64.StdEncoding.EncodeToString([]byte(redactGateOutput(string(output))))
+		redactedOutput := redactGateOutput(string(output))
+		result.Output = base64.StdEncoding.EncodeToString([]byte(redactedOutput))
+		result.OutputText = strconv.Quote(redactedOutput)
 		result.OutputEncoding = "base64"
 		result.FinishedAt = time.Now().UTC()
 		result.DurationMS = result.FinishedAt.Sub(started).Milliseconds()
@@ -655,7 +652,9 @@ func runJobGates(root string, packet jobPacket, worktree, commit string, setupEr
 		evidenceResult := result
 		for index := range evidenceResult.Checks {
 			if evidenceResult.Checks[index].Output != "" {
-				evidenceResult.Checks[index].Output = base64.StdEncoding.EncodeToString([]byte(evidenceResult.Checks[index].Output))
+				rawOutput := evidenceResult.Checks[index].Output
+				evidenceResult.Checks[index].Output = base64.StdEncoding.EncodeToString([]byte(rawOutput))
+				evidenceResult.Checks[index].OutputText = strconv.Quote(rawOutput)
 				evidenceResult.Checks[index].OutputEncoding = "base64"
 			}
 		}
@@ -732,12 +731,14 @@ func gateResultReason(result gateResult) string {
 }
 
 func hasAttestation(attestations []jobAttestation, gate, check string) bool {
+	passed, failed := false, false
 	for _, attestation := range attestations {
-		if attestation.Gate == gate && attestation.Check == check && attestation.Result == "passed" {
-			return true
+		if attestation.Gate == gate && attestation.Check == check {
+			passed = passed || attestation.Result == "passed"
+			failed = failed || attestation.Result == "failed"
 		}
 	}
-	return false
+	return passed && !failed
 }
 
 func appendAttestation(attestations []jobAttestation, value jobAttestation) []jobAttestation {
@@ -809,10 +810,15 @@ func lifecycleCommitBody(root, operation string) string {
 	project := filepath.Base(root)
 	if content, err := os.ReadFile(filepath.Join(root, "control", "project.yaml")); err == nil {
 		var metadata struct {
-			Name string `yaml:"name"`
+			Name    string `yaml:"name"`
+			Project struct {
+				Name string `yaml:"name"`
+			} `yaml:"project"`
 		}
 		if yaml.Unmarshal(content, &metadata) == nil && strings.TrimSpace(metadata.Name) != "" {
 			project = strings.TrimSpace(metadata.Name)
+		} else if strings.TrimSpace(metadata.Project.Name) != "" {
+			project = strings.TrimSpace(metadata.Project.Name)
 		}
 	}
 	return "Recorded by Leadfox lifecycle management.\n\nLeadfox-Managed: true\nLeadfox-Project: " + project + "\nLeadfox-Operation: " + operation
@@ -1157,6 +1163,9 @@ func jobAttest(root, id string, o jobOptions) error {
 	packet.Attestations = appendAttestation(packet.Attestations, attestation)
 	packet.UpdatedAt = attestation.RecordedAt
 	for index, evidence := range packet.GateEvidence {
+		if evidence.Gate != gateName {
+			continue
+		}
 		content, readErr := os.ReadFile(filepath.Join(root, filepath.FromSlash(evidence.Evidence)))
 		if readErr != nil {
 			return fmt.Errorf("read gate evidence %q: %w", evidence.Gate, readErr)
@@ -1280,8 +1289,9 @@ func jobResume(root, id string, o jobOptions) error {
 		return errors.New("--actor is required for a lifecycle transition")
 	}
 	packet.Status = "running"
-	packet.TerminalReason, packet.TerminalBy, packet.TerminalAt = "", "", ""
-	packet.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	now := time.Now().UTC().Format(time.RFC3339)
+	packet.ResumeReason, packet.ResumeBy, packet.ResumeAt = o.reason, actor, now
+	packet.UpdatedAt = now
 	if err := writeJob(root, packet, body); err != nil {
 		return err
 	}

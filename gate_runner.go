@@ -52,6 +52,7 @@ type checkResult struct {
 	ExitCode       int    `json:"exit_code,omitempty" yaml:"exit_code,omitempty"`
 	DurationMS     int64  `json:"duration_ms,omitempty" yaml:"duration_ms,omitempty"`
 	Output         string `json:"output,omitempty" yaml:"output,omitempty"`
+	OutputText     string `json:"output_text,omitempty" yaml:"output_text,omitempty"`
 	OutputEncoding string `json:"output_encoding,omitempty" yaml:"output_encoding,omitempty"`
 	Reason         string `json:"reason,omitempty" yaml:"reason,omitempty"`
 }
