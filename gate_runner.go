@@ -55,6 +55,7 @@ type checkResult struct {
 	OutputText     string `json:"output_text,omitempty" yaml:"output_text,omitempty"`
 	OutputEncoding string `json:"output_encoding,omitempty" yaml:"output_encoding,omitempty"`
 	Reason         string `json:"reason,omitempty" yaml:"reason,omitempty"`
+	Attestation    string `json:"attestation,omitempty" yaml:"attestation,omitempty"`
 }
 
 type gateResult struct {

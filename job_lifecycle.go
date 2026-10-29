@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -113,6 +112,8 @@ type jobAttestation struct {
 	Note       string `yaml:"note,omitempty"`
 	Actor      string `yaml:"actor"`
 	RecordedAt string `yaml:"recorded_at"`
+	ReplacedAt string `yaml:"replaced_at,omitempty"`
+	ReplacedBy string `yaml:"replaced_by,omitempty"`
 }
 
 type jobWorktreeRecord struct {
@@ -595,7 +596,7 @@ func runReviewSetup(worktree string, commands []string, timeout time.Duration) (
 		output, err := command.CombinedOutput()
 		redactedOutput := redactGateOutput(string(output))
 		result.Output = base64.StdEncoding.EncodeToString([]byte(redactedOutput))
-		result.OutputText = strconv.Quote(redactedOutput)
+		result.OutputText = redactedOutput
 		result.OutputEncoding = "base64"
 		result.FinishedAt = time.Now().UTC()
 		result.DurationMS = result.FinishedAt.Sub(started).Milliseconds()
@@ -656,10 +657,13 @@ func runJobGates(root string, packet jobPacket, worktree, commit string, setupEr
 		path := filepath.Join(evidenceDir, fmt.Sprintf("%s-round-%d-%s.yaml", packet.ID, round, sanitizeFilename(gateName)))
 		evidenceResult := result
 		for index := range evidenceResult.Checks {
+			if evidenceResult.Checks[index].Status == "manual" {
+				evidenceResult.Checks[index].Attestation = gateName + "/" + evidenceResult.Checks[index].ID
+			}
 			if evidenceResult.Checks[index].Output != "" {
 				rawOutput := evidenceResult.Checks[index].Output
 				evidenceResult.Checks[index].Output = base64.StdEncoding.EncodeToString([]byte(rawOutput))
-				evidenceResult.Checks[index].OutputText = strconv.Quote(rawOutput)
+				evidenceResult.Checks[index].OutputText = rawOutput
 				evidenceResult.Checks[index].OutputEncoding = "base64"
 			}
 		}
@@ -679,7 +683,7 @@ func runJobGates(root string, packet jobPacket, worktree, commit string, setupEr
 		results = append(results, jobGateEvidence{Gate: gateName, Status: result.Status, Verified: verified, Commit: commit, Evidence: filepath.ToSlash(relative), Hash: hex.EncodeToString(hash[:]), RecordedAt: document.RecordedAt, SetupEvidence: setupPath, SetupHash: setupHash})
 		if !verified {
 			if firstErr == nil {
-				firstErr = fmt.Errorf("required gate %q did not verify: %s", gateName, gateResultReason(result))
+				firstErr = fmt.Errorf("required gate %q did not verify: %s", gateName, gateResultReason(result, gateName))
 			}
 		}
 	}
@@ -724,12 +728,13 @@ func gateResultVerified(result gateResult, gateName string, packet jobPacket) bo
 	return result.Status == "passed" || result.Status == "manual"
 }
 
-func gateResultReason(result gateResult) string {
-	if result.Status == "failed" {
-		for _, item := range result.Checks {
-			if item.Status == "failed" {
-				return item.ID + " failed"
-			}
+func gateResultReason(result gateResult, gateName string) string {
+	for _, item := range result.Checks {
+		if item.Status == "failed" {
+			return item.ID + " failed"
+		}
+		if item.Status == "manual" {
+			return gateName + "/" + item.ID + " requires explicit attestation"
 		}
 	}
 	return "manual or deferred checks require explicit attestation"
@@ -1030,7 +1035,7 @@ func jobApprove(root, id string, o jobOptions) error {
 	if err != nil {
 		return err
 	}
-	if packet.Status != "review" {
+	if packet.Status != "review" && packet.Status != "review-failed" {
 		return fmt.Errorf("job %s is %q; create a review worktree first", id, packet.Status)
 	}
 	if o.verdict != "accepted" && o.verdict != "changes-requested" {
@@ -1152,7 +1157,7 @@ func verifyGateEvidence(root string, packet jobPacket) error {
 				return fmt.Errorf("parse setup evidence: %w", err)
 			}
 			if setup.SchemaVersion != evidenceSchemaVersion {
-				return fmt.Errorf("setup evidence uses schema version %d; expected %d; regenerate the review evidence", setup.SchemaVersion, evidenceSchemaVersion)
+				return fmt.Errorf("setup evidence uses schema version %d; expected %d; regenerate the review evidence with 'leadfox job review'", setup.SchemaVersion, evidenceSchemaVersion)
 			}
 			if setup.Job != packet.ID || setup.Round != latestRound || setup.Commit != packet.ReviewCommit {
 				return errors.New("setup evidence does not match the reviewed job, round, or commit")
@@ -1172,7 +1177,7 @@ func verifyGateEvidence(root string, packet jobPacket) error {
 			return fmt.Errorf("parse evidence for gate %q: %w", evidence.Gate, err)
 		}
 		if document.SchemaVersion != evidenceSchemaVersion {
-			return fmt.Errorf("evidence for gate %q uses schema version %d; expected %d; regenerate the review evidence", evidence.Gate, document.SchemaVersion, evidenceSchemaVersion)
+			return fmt.Errorf("evidence for gate %q uses schema version %d; expected %d; regenerate the review evidence with 'leadfox job review'", evidence.Gate, document.SchemaVersion, evidenceSchemaVersion)
 		}
 		if document.Job != packet.ID || document.Round != latestRound || document.Commit != packet.ReviewCommit || document.Result.Gate != evidence.Gate {
 			return fmt.Errorf("required gate evidence %q does not match the reviewed job, round, commit, or gate", evidence.Gate)
@@ -1236,6 +1241,8 @@ func jobAttest(root, id string, o jobOptions) error {
 	}
 	attestation := jobAttestation{Gate: gateName, Check: checkName, Result: o.result, Note: o.note, Actor: o.approvedBy, RecordedAt: time.Now().UTC().Format(time.RFC3339)}
 	if previous, found := currentAttestation(packet.Attestations, gateName, checkName); found {
+		previous.ReplacedAt = attestation.RecordedAt
+		previous.ReplacedBy = attestation.Actor
 		packet.AttestationHistory = append(packet.AttestationHistory, previous)
 	}
 	packet.Attestations = appendAttestation(packet.Attestations, attestation)
@@ -1253,9 +1260,15 @@ func jobAttest(root, id string, o jobOptions) error {
 			return fmt.Errorf("parse gate evidence %q: %w", evidence.Gate, err)
 		}
 		if document.SchemaVersion != evidenceSchemaVersion {
-			return fmt.Errorf("gate evidence %q uses schema version %d; regenerate the review evidence before attesting", evidence.Gate, document.SchemaVersion)
+			return fmt.Errorf("gate evidence %q uses schema version %d; regenerate the review evidence with 'leadfox job review' before attesting", evidence.Gate, document.SchemaVersion)
 		}
 		document.Attestations = packet.Attestations
+		gateVerified := gateResultVerified(document.Result, evidence.Gate, packet)
+		if o.result == "failed" {
+			document.Result.Status = "failed"
+		} else if gateVerified {
+			document.Result.Status = "passed"
+		}
 		updated, err := yaml.Marshal(document)
 		if err != nil {
 			return fmt.Errorf("encode gate evidence %q: %w", evidence.Gate, err)
@@ -1265,7 +1278,8 @@ func jobAttest(root, id string, o jobOptions) error {
 		}
 		hash := sha256.Sum256(updated)
 		packet.GateEvidence[index].Hash = hex.EncodeToString(hash[:])
-		packet.GateEvidence[index].Verified = gateResultVerified(document.Result, evidence.Gate, packet)
+		packet.GateEvidence[index].Status = document.Result.Status
+		packet.GateEvidence[index].Verified = gateVerified && o.result != "failed"
 	}
 	allVerified := len(packet.Gates) == 0
 	if len(packet.Gates) > 0 {

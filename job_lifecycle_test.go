@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestAttestationReplacementAndFailureRules(t *testing.T) {
@@ -36,6 +38,31 @@ func TestScopeAttestationDoesNotApproveOtherManualChecks(t *testing.T) {
 	attestations := appendScopeAttestations(root, jobPacket{Gates: []string{"integration"}})
 	if len(attestations) != 1 || attestations[0].Check != "scope" {
 		t.Fatalf("unexpected automatic attestations: %+v", attestations)
+	}
+}
+
+func TestEvidenceOutputTextPreservesLeadingBlankLines(t *testing.T) {
+	document := gateEvidenceDocument{
+		SchemaVersion: evidenceSchemaVersion,
+		Job:           "JOB-OUTPUT",
+		Round:         1,
+		Commit:        "abc",
+		Result: gateResult{Checks: []checkResult{{
+			ID:         "probe",
+			Output:     "Cg p",
+			OutputText: "\n\n  probe: readable\n",
+		}}},
+	}
+	encoded, err := yaml.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded gateEvidenceDocument
+	if err := yaml.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("evidence YAML did not round-trip: %v\n%s", err, encoded)
+	}
+	if !strings.Contains(decoded.Result.Checks[0].OutputText, "probe: readable") {
+		t.Fatalf("output text was not readable after round-trip: %q", decoded.Result.Checks[0].OutputText)
 	}
 }
 
