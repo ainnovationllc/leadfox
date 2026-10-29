@@ -8,6 +8,22 @@ import (
 	"testing"
 )
 
+func TestAttestationReplacementAndFailureRules(t *testing.T) {
+	automatic := jobAttestation{Gate: "local-dev", Check: "scope", Result: "passed", Actor: "Leadfox"}
+	explicit := jobAttestation{Gate: "local-dev", Check: "scope", Result: "passed", Actor: "Control", Note: "confirmed"}
+	attestations := appendAttestation([]jobAttestation{automatic}, explicit)
+	if len(attestations) != 1 || attestations[0].Actor != "Control" || attestations[0].Note != "confirmed" {
+		t.Fatalf("explicit attestation did not replace automatic placeholder: %+v", attestations)
+	}
+	attestations = append(attestations, jobAttestation{Gate: "local-dev", Check: "scope", Result: "failed", Actor: "Control"})
+	if hasAttestation(attestations, "local-dev", "scope") {
+		t.Fatal("failed attestation did not invalidate a prior passing attestation")
+	}
+	if !hasFailedAttestation(attestations, "local-dev", "scope") {
+		t.Fatal("failed attestation was not detected")
+	}
+}
+
 func TestJobLifecycleCreatesReviewsApprovesAndMerges(t *testing.T) {
 	root := t.TempDir()
 	gitTest(t, root, "init", "-b", "main")

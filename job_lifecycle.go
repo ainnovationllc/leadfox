@@ -439,7 +439,7 @@ func jobNew(root, id string, o jobOptions) error {
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	packet := jobPacket{ID: id, Status: "draft", Role: o.role, Objective: o.objective, BaseBranch: o.base, AllowedPaths: o.allow, ExcludedPaths: o.exclude, Gates: o.gates, ReviewSetup: o.setup, CreatedAt: now, UpdatedAt: now}
-	body := "# " + id + "\n\n## Objective\n\n" + o.objective + "\n\n## Agent instructions\n\nRead the approved project documentation before starting. Do not modify files outside the allowed paths. Return a handoff listing changed paths, checks run, results, assumptions, unresolved items, and the recommended next step.\n\n## Acceptance\n\nSet the packet status to ready after Control has completed the job design.\n"
+	body := "# " + id + "\n\n## Objective\n\n" + o.objective + "\n\n## Agent instructions\n\nRead the approved project documentation before starting. Do not modify files outside the allowed paths. Return a handoff listing changed paths, checks run, results, assumptions, unresolved items, and the recommended next step.\n\n## Git provenance\n\n`base_commit` and `branch_start_commit` identify the commit from which the job branch was created. The shared lifecycle start record is committed immediately afterward and is reachable from the job branch; its SHA is intentionally not stored inside that same commit because a commit cannot contain its own ID.\n\n## Acceptance\n\nSet the packet status to ready after Control has completed the job design.\n"
 	if err := writeJob(root, packet, body); err != nil {
 		return err
 	}
@@ -741,9 +741,24 @@ func hasAttestation(attestations []jobAttestation, gate, check string) bool {
 	return passed && !failed
 }
 
+func hasFailedAttestation(attestations []jobAttestation, gate, check string) bool {
+	for _, attestation := range attestations {
+		if attestation.Gate == gate && attestation.Check == check && attestation.Result == "failed" {
+			return true
+		}
+	}
+	return false
+}
+
 func appendAttestation(attestations []jobAttestation, value jobAttestation) []jobAttestation {
-	for _, existing := range attestations {
+	for index, existing := range attestations {
 		if existing.Gate == value.Gate && existing.Check == value.Check && existing.Result == value.Result {
+			// Review automatically records Leadfox's scope attestation. An
+			// explicit developer attestation must replace that placeholder so
+			// its identity, note, and timestamp are retained.
+			if existing.Actor == "Leadfox" && value.Actor != "Leadfox" {
+				attestations[index] = value
+			}
 			return attestations
 		}
 	}
@@ -1158,6 +1173,9 @@ func jobAttest(root, id string, o jobOptions) error {
 	}
 	if o.approvedBy == "" {
 		return errors.New("--approved-by is required for a manual attestation")
+	}
+	if o.result == "passed" && hasFailedAttestation(packet.Attestations, gateName, checkName) {
+		return fmt.Errorf("check %s/%s has a failed attestation; create a new review round before attesting it as passed", gateName, checkName)
 	}
 	attestation := jobAttestation{Gate: gateName, Check: checkName, Result: o.result, Note: o.note, Actor: o.approvedBy, RecordedAt: time.Now().UTC().Format(time.RFC3339)}
 	packet.Attestations = appendAttestation(packet.Attestations, attestation)
