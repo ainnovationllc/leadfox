@@ -24,6 +24,8 @@ objective: Build the service skeleton.
 base_branch: main
 allowed_paths:
   - services/example/**
+gates:
+  - unit
 ---
 # JOB-001
 
@@ -33,6 +35,12 @@ Build the service skeleton.
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(filepath.Join(root, "services", "example"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "control", "gates.yaml"), []byte("gates:\n  - id: unit\n    checks:\n      - id: packet\n        run: test -f control/project.yaml\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "control", "project.yaml"), []byte("project:\n  name: test\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "services", "example", "README.md"), []byte("initial\n"), 0o644); err != nil {
@@ -56,12 +64,43 @@ Build the service skeleton.
 	}
 
 	reviewWorktree := filepath.Join(root, "..", "job-review")
-	branchCommit := strings.TrimSpace(gitTest(t, jobWorktree, "rev-parse", "HEAD"))
-	if err := jobReview(root, "JOB-001", jobOptions{commit: branchCommit, worktree: reviewWorktree}); err != nil {
+	fullBranchCommit := strings.TrimSpace(gitTest(t, jobWorktree, "rev-parse", "HEAD"))
+	shortBranchCommit := fullBranchCommit[:8]
+	if err := jobReview(root, "JOB-001", jobOptions{commit: shortBranchCommit, worktree: reviewWorktree}); err != nil {
 		t.Fatalf("review job: %v", err)
+	}
+	packetAfterReview, _, err := readJob(root, "JOB-001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if packetAfterReview.ReviewCommit != fullBranchCommit {
+		t.Fatalf("review commit was not normalized: %q", packetAfterReview.ReviewCommit)
+	}
+	if len(packetAfterReview.GateEvidence) != 1 || !packetAfterReview.GateEvidence[0].Verified {
+		t.Fatalf("gate evidence was not recorded: %+v", packetAfterReview.GateEvidence)
+	}
+	if err := jobApprove(root, "JOB-001", jobOptions{verdict: "changes-requested"}); err != nil {
+		t.Fatalf("request changes: %v", err)
+	}
+	if err := jobReview(root, "JOB-001", jobOptions{commit: fullBranchCommit, worktree: reviewWorktree}); err != nil {
+		t.Fatalf("review second round: %v", err)
+	}
+	packetAfterSecondReview, _, err := readJob(root, "JOB-001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(packetAfterSecondReview.ReviewRounds) != 2 {
+		t.Fatalf("review rounds were overwritten: %+v", packetAfterSecondReview.ReviewRounds)
 	}
 	if err := jobApprove(root, "JOB-001", jobOptions{verdict: "accepted"}); err != nil {
 		t.Fatalf("approve job: %v", err)
+	}
+	approval, err := os.ReadFile(filepath.Join(root, "control", "approvals", "JOB-001.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(approval), "Add Control review evidence") || !strings.Contains(string(approval), "Approved by:") {
+		t.Fatalf("approval record is incomplete: %s", approval)
 	}
 	if err := jobMerge(root, "JOB-001"); err != nil {
 		t.Fatalf("merge job: %v", err)
@@ -75,6 +114,20 @@ Build the service skeleton.
 	merged := gitTest(t, root, "log", "--oneline", "-3")
 	if !strings.Contains(merged, "Merge JOB-001") || !strings.Contains(merged, "Record merge JOB-001") {
 		t.Fatalf("merge records missing: %s", merged)
+	}
+	mergedPacket, _, err := readJob(root, "JOB-001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mergedPacket.MergeCommit == "" {
+		t.Fatal("merge commit was not recorded")
+	}
+	evidence, err := os.ReadFile(filepath.Join(root, packetAfterSecondReview.GateEvidence[0].Evidence))
+	if err != nil {
+		t.Fatalf("gate evidence file missing: %v", err)
+	}
+	if !strings.Contains(string(evidence), fullBranchCommit) {
+		t.Fatalf("gate evidence does not identify reviewed commit: %s", evidence)
 	}
 }
 

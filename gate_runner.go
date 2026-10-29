@@ -216,6 +216,12 @@ func executeGate(root string, options gateOptions) (gateResult, error) {
 			result.Status = "failed"
 			break
 		}
+		if item.Status == "deferred" {
+			result.Status = "deferred"
+		}
+		if item.Status == "manual" && result.Status == "passed" {
+			result.Status = "manual"
+		}
 	}
 	result.FinishedAt = time.Now().UTC()
 	return result, nil

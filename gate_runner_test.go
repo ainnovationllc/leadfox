@@ -65,6 +65,24 @@ func TestExecuteGateTimesOut(t *testing.T) {
 	}
 }
 
+func TestExecuteGateDoesNotCallManualChecksPassed(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "control"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "gates:\n  - id: sample\n    checks:\n      - id: attest\n        manual: true\n"
+	if err := os.WriteFile(filepath.Join(root, "control", "gates.yaml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result, err := executeGate(root, gateOptions{gateName: "sample", timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "manual" || result.Checks[0].Status != "manual" {
+		t.Fatalf("manual check was reported as passed: %+v", result)
+	}
+}
+
 func TestRedactGateOutput(t *testing.T) {
 	output := redactGateOutput("Authorization: Bearer abc123\npassword=secret\nordinary output")
 	if strings.Contains(output, "abc123") || strings.Contains(output, "secret") {
