@@ -521,7 +521,9 @@ func jobStart(root, id string, o jobOptions) error {
 	if _, err := gitOutput(root, "worktree", "add", "-b", branch, worktree, baseCommit); err != nil {
 		return fmt.Errorf("create job worktree: %w", err)
 	}
-	packet.Status, packet.BaseBranch, packet.BaseCommit, packet.Branch, packet.BranchStartCommit, packet.Worktree, packet.UpdatedAt = "running", base, baseCommit, branch, baseCommit, worktree, time.Now().UTC().Format(time.RFC3339)
+	now := time.Now().UTC().Format(time.RFC3339)
+	appendTransition(&packet, "running", "job started", "Control", now)
+	packet.Status, packet.BaseBranch, packet.BaseCommit, packet.Branch, packet.BranchStartCommit, packet.Worktree, packet.UpdatedAt = "running", base, baseCommit, branch, baseCommit, worktree, now
 	if err := writeJob(root, packet, body); err != nil {
 		return err
 	}
@@ -1014,7 +1016,9 @@ func jobReview(root, id string, o jobOptions) error {
 		}
 	}
 	round := jobReviewRound{Number: len(packet.ReviewRounds) + 1, Commit: commit, Status: roundStatus, Reason: o.reason, RecordedAt: time.Now().UTC().Format(time.RFC3339), Evidence: evidence}
-	packet.Status, packet.ReviewCommit, packet.ReviewWorktree, packet.UpdatedAt = packetStatus, commit, worktree, time.Now().UTC().Format(time.RFC3339)
+	now := time.Now().UTC().Format(time.RFC3339)
+	appendTransition(&packet, packetStatus, "review completed", "Leadfox", now)
+	packet.Status, packet.ReviewCommit, packet.ReviewWorktree, packet.UpdatedAt = packetStatus, commit, worktree, now
 	packet.ReviewWorktrees = appendUnique(packet.ReviewWorktrees, worktree)
 	packet.GateEvidence = evidence
 	packet.ReviewRounds = append(packet.ReviewRounds, round)
@@ -1513,9 +1517,9 @@ func jobResume(root, id string, o jobOptions) error {
 	if actor == "" {
 		return errors.New("--actor is required for a lifecycle transition")
 	}
-	packet.Status = "running"
 	now := time.Now().UTC().Format(time.RFC3339)
 	appendTransition(&packet, "running", o.reason, actor, now)
+	packet.Status = "running"
 	packet.ResumeReason, packet.ResumeBy, packet.ResumeAt = o.reason, actor, now
 	packet.UpdatedAt = now
 	if err := writeJob(root, packet, body); err != nil {

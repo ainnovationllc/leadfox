@@ -189,6 +189,9 @@ Build the service skeleton.
 	if jobCopy.Status != "running" || jobCopy.Branch == "" || jobCopy.Worktree == "" || jobCopy.BaseCommit == "" {
 		t.Fatalf("job worktree received stale packet: %+v", jobCopy)
 	}
+	if len(jobCopy.Transitions) != 1 || jobCopy.Transitions[0].From != "ready" || jobCopy.Transitions[0].To != "running" {
+		t.Fatalf("job start transition was not recorded: %+v", jobCopy.Transitions)
+	}
 	changed := filepath.Join(jobWorktree, "services", "example", "service.go")
 	if err := os.WriteFile(changed, []byte("package example\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -217,6 +220,9 @@ Build the service skeleton.
 	}
 	if packetAfterReview.ReviewCommit != fullBranchCommit {
 		t.Fatalf("review commit was not normalized: %q", packetAfterReview.ReviewCommit)
+	}
+	if len(packetAfterReview.Transitions) < 2 || packetAfterReview.Transitions[1].From != "running" || packetAfterReview.Transitions[1].To != "review" {
+		t.Fatalf("review transition was not recorded: %+v", packetAfterReview.Transitions)
 	}
 	if len(packetAfterReview.GateEvidence) != 1 || !packetAfterReview.GateEvidence[0].Verified {
 		t.Fatalf("gate evidence was not recorded: %+v", packetAfterReview.GateEvidence)
