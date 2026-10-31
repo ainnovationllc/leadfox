@@ -26,6 +26,70 @@ func TestAttestationReplacementAndFailureRules(t *testing.T) {
 	}
 }
 
+func TestJobOptionsRejectUnsupportedFlags(t *testing.T) {
+	options, _, err := parseJobOptions([]string{"JOB-001", "--commit", "abc"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateJobOptions("start", options); err == nil || !strings.Contains(err.Error(), "job start does not accept --commit") {
+		t.Fatalf("unsupported option was not rejected: %v", err)
+	}
+	options, _, err = parseJobOptions([]string{"JOB-001", "--commit", "abc"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateJobOptions("scope", options); err != nil {
+		t.Fatalf("supported scope option was rejected: %v", err)
+	}
+}
+
+func TestJobScopeUsesExplicitCommit(t *testing.T) {
+	root := t.TempDir()
+	gitTest(t, root, "init", "-b", "main")
+	gitTest(t, root, "config", "user.email", "leadfox@example.test")
+	gitTest(t, root, "config", "user.name", "Leadfox Test")
+	if err := os.MkdirAll(filepath.Join(root, "control", "jobs", "JOB-SCOPE"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "services", "example"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	packetPath := jobPath(root, "JOB-SCOPE")
+	packet := "---\nid: JOB-SCOPE\nstatus: running\nallowed_paths:\n  - services/example/**\n---\n# JOB-SCOPE\n"
+	if err := os.WriteFile(packetPath, []byte(packet), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "services", "example", "README.md"), []byte("initial\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, root, "add", ".")
+	gitTest(t, root, "commit", "-m", "initial")
+	base := strings.TrimSpace(gitTest(t, root, "rev-parse", "HEAD"))
+	updatedPacket := packet[:len(packet)-len("---\n# JOB-SCOPE\n")] + "base_commit: " + base + "\nworktree: " + root + "\n---\n# JOB-SCOPE\n"
+	if err := os.WriteFile(packetPath, []byte(updatedPacket), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, root, "add", packetPath)
+	gitTest(t, root, "commit", "-m", "record base")
+	if err := os.WriteFile(filepath.Join(root, "services", "example", "service.go"), []byte("package example\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, root, "add", ".")
+	gitTest(t, root, "commit", "-m", "allowed change")
+	allowedCommit := strings.TrimSpace(gitTest(t, root, "rev-parse", "HEAD"))
+	if err := os.WriteFile(filepath.Join(root, "outside.txt"), []byte("out of scope\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, root, "add", ".")
+	gitTest(t, root, "commit", "-m", "out of scope change")
+	if err := jobScope(root, "JOB-SCOPE", jobOptions{commit: allowedCommit}); err != nil {
+		t.Fatalf("explicit commit was not used for scope: %v", err)
+	}
+	if err := jobScope(root, "JOB-SCOPE", jobOptions{}); err == nil {
+		t.Fatal("scope ignored the branch head's out-of-scope change")
+	}
+}
+
 func TestScopeAttestationDoesNotApproveOtherManualChecks(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "control"), 0o755); err != nil {

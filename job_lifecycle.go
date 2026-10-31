@@ -187,6 +187,7 @@ type jobOptions struct {
 	approvedBy, actor, reason, note, result, check           string
 	allow, exclude, gates, setup                             []string
 	showHelp                                                 bool
+	used                                                     map[string]bool
 }
 
 func runJobCommand(args []string) error {
@@ -202,6 +203,9 @@ func runJobCommand(args []string) error {
 	if options.showHelp {
 		fmt.Print(jobHelpText)
 		return nil
+	}
+	if err := validateJobOptions(operation, options); err != nil {
+		return err
 	}
 	root, err := gitRoot(".")
 	if err != nil {
@@ -264,7 +268,7 @@ func jobList(root string) error {
 }
 
 func parseJobOptions(args []string) (jobOptions, string, error) {
-	o := jobOptions{base: "main"}
+	o := jobOptions{base: "main", used: make(map[string]bool)}
 	id := ""
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -272,6 +276,7 @@ func parseJobOptions(args []string) (jobOptions, string, error) {
 		case "-h", "--help":
 			o.showHelp = true
 		case "-b", "--base":
+			o.used["base"] = true
 			v, n, e := requiredOptionValue(args, i, arg)
 			if e != nil {
 				return o, id, e
@@ -279,6 +284,7 @@ func parseJobOptions(args []string) (jobOptions, string, error) {
 			o.base = v
 			i = n
 		case "-w", "--worktree":
+			o.used["worktree"] = true
 			v, n, e := requiredOptionValue(args, i, arg)
 			if e != nil {
 				return o, id, e
@@ -286,6 +292,7 @@ func parseJobOptions(args []string) (jobOptions, string, error) {
 			o.worktree = v
 			i = n
 		case "--branch":
+			o.used["branch"] = true
 			v, n, e := requiredOptionValue(args, i, arg)
 			if e != nil {
 				return o, id, e
@@ -293,6 +300,7 @@ func parseJobOptions(args []string) (jobOptions, string, error) {
 			o.branch = v
 			i = n
 		case "--commit":
+			o.used["commit"] = true
 			v, n, e := requiredOptionValue(args, i, arg)
 			if e != nil {
 				return o, id, e
@@ -300,6 +308,7 @@ func parseJobOptions(args []string) (jobOptions, string, error) {
 			o.commit = v
 			i = n
 		case "--role":
+			o.used["role"] = true
 			v, n, e := requiredOptionValue(args, i, arg)
 			if e != nil {
 				return o, id, e
@@ -307,6 +316,7 @@ func parseJobOptions(args []string) (jobOptions, string, error) {
 			o.role = v
 			i = n
 		case "--objective":
+			o.used["objective"] = true
 			v, n, e := requiredOptionValue(args, i, arg)
 			if e != nil {
 				return o, id, e
@@ -314,6 +324,7 @@ func parseJobOptions(args []string) (jobOptions, string, error) {
 			o.objective = v
 			i = n
 		case "--verdict":
+			o.used["verdict"] = true
 			v, n, e := requiredOptionValue(args, i, arg)
 			if e != nil {
 				return o, id, e
@@ -321,42 +332,49 @@ func parseJobOptions(args []string) (jobOptions, string, error) {
 			o.verdict = v
 			i = n
 		case "--approved-by":
+			o.used["approved-by"] = true
 			v, n, e := requiredOptionValue(args, i, arg)
 			if e != nil {
 				return o, id, e
 			}
 			o.approvedBy, i = v, n
 		case "--actor":
+			o.used["actor"] = true
 			v, n, e := requiredOptionValue(args, i, arg)
 			if e != nil {
 				return o, id, e
 			}
 			o.actor, i = v, n
 		case "--reason":
+			o.used["reason"] = true
 			v, n, e := requiredOptionValue(args, i, arg)
 			if e != nil {
 				return o, id, e
 			}
 			o.reason, i = v, n
 		case "--note":
+			o.used["note"] = true
 			v, n, e := requiredOptionValue(args, i, arg)
 			if e != nil {
 				return o, id, e
 			}
 			o.note, i = v, n
 		case "--result":
+			o.used["result"] = true
 			v, n, e := requiredOptionValue(args, i, arg)
 			if e != nil {
 				return o, id, e
 			}
 			o.result, i = v, n
 		case "--check":
+			o.used["check"] = true
 			v, n, e := requiredOptionValue(args, i, arg)
 			if e != nil {
 				return o, id, e
 			}
 			o.check, i = v, n
 		case "--allow":
+			o.used["allow"] = true
 			v, n, e := requiredOptionValue(args, i, arg)
 			if e != nil {
 				return o, id, e
@@ -364,6 +382,7 @@ func parseJobOptions(args []string) (jobOptions, string, error) {
 			o.allow = append(o.allow, v)
 			i = n
 		case "--exclude":
+			o.used["exclude"] = true
 			v, n, e := requiredOptionValue(args, i, arg)
 			if e != nil {
 				return o, id, e
@@ -371,6 +390,7 @@ func parseJobOptions(args []string) (jobOptions, string, error) {
 			o.exclude = append(o.exclude, v)
 			i = n
 		case "--gate":
+			o.used["gate"] = true
 			v, n, e := requiredOptionValue(args, i, arg)
 			if e != nil {
 				return o, id, e
@@ -378,6 +398,7 @@ func parseJobOptions(args []string) (jobOptions, string, error) {
 			o.gates = append(o.gates, v)
 			i = n
 		case "--setup":
+			o.used["setup"] = true
 			v, n, e := requiredOptionValue(args, i, arg)
 			if e != nil {
 				return o, id, e
@@ -395,6 +416,32 @@ func parseJobOptions(args []string) (jobOptions, string, error) {
 		}
 	}
 	return o, id, nil
+}
+
+func validateJobOptions(operation string, o jobOptions) error {
+	allowed := map[string]map[string]bool{
+		"new":     {"base": true, "worktree": true, "branch": true, "role": true, "objective": true, "allow": true, "exclude": true, "gate": true, "setup": true},
+		"start":   {"base": true, "worktree": true, "branch": true},
+		"scope":   {"worktree": true, "commit": true},
+		"review":  {"worktree": true, "commit": true, "reason": true},
+		"approve": {"verdict": true, "approved-by": true, "note": true},
+		"attest":  {"check": true, "result": true, "approved-by": true, "note": true},
+		"cancel":  {"reason": true, "actor": true, "approved-by": true},
+		"block":   {"reason": true, "actor": true, "approved-by": true},
+		"resume":  {"reason": true, "actor": true},
+		"list":    {},
+		"merge":   {},
+	}
+	operationAllowed, found := allowed[operation]
+	if !found {
+		return fmt.Errorf("unknown job operation %q; use 'leadfox job --help' for usage", operation)
+	}
+	for option := range o.used {
+		if !operationAllowed[option] {
+			return fmt.Errorf("job %s does not accept --%s", operation, option)
+		}
+	}
+	return nil
 }
 
 func jobPath(root, id string) string { return filepath.Join(root, "control", "jobs", id+".md") }
@@ -559,7 +606,14 @@ func jobScope(root, id string, o jobOptions) error {
 	if worktree == "" {
 		return errors.New("a job worktree is required")
 	}
-	return checkJobScope(root, packet, worktree, "HEAD")
+	target := "HEAD"
+	if o.commit != "" {
+		target, err = resolveCommit(root, o.commit)
+		if err != nil {
+			return fmt.Errorf("resolve scope commit: %w", err)
+		}
+	}
+	return checkJobScope(root, packet, worktree, target)
 }
 
 func checkJobScope(root string, packet jobPacket, worktree, commit string) error {
@@ -572,6 +626,7 @@ func checkJobScope(root string, packet jobPacket, worktree, commit string) error
 		return fmt.Errorf("inspect job scope: %w", err)
 	}
 	paths := nonEmptyLines(changed)
+	fmt.Printf("Scope target: %s\n", strings.TrimSpace(commit))
 	var violations []string
 	for _, path := range paths {
 		if filepath.ToSlash(path) == filepath.ToSlash(filepath.Join("control", "jobs", packet.ID+".md")) {
