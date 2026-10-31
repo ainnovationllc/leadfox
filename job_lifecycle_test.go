@@ -43,6 +43,43 @@ func TestJobOptionsRejectUnsupportedFlags(t *testing.T) {
 	}
 }
 
+func TestAcceptanceCriteriaRequireEvidence(t *testing.T) {
+	packet := jobPacket{AcceptanceCriteria: []jobCriterion{
+		{ID: "A1", Statement: "the checks pass", Status: "pending"},
+		{ID: "A2", Statement: "the artifact is retained", Status: "failed"},
+	}}
+	if err := acceptanceCriteriaError(packet); err == nil || !strings.Contains(err.Error(), "failed acceptance criteria: A2") {
+		t.Fatalf("expected failed criteria, got %v", err)
+	}
+	packet.AcceptanceCriteria[1].Status = "pending"
+	if err := acceptanceCriteriaError(packet); err == nil || !strings.Contains(err.Error(), "pending acceptance criteria: A1, A2") {
+		t.Fatalf("expected pending criteria, got %v", err)
+	}
+	packet.AcceptanceCriteria[0].Status = "passed"
+	packet.AcceptanceCriteria[1].Status = "waived"
+	if err := acceptanceCriteriaError(packet); err != nil {
+		t.Fatalf("passed and waived criteria should approve: %v", err)
+	}
+}
+
+func TestExternalEvidenceOptionsAndDiagnosticSemantics(t *testing.T) {
+	options, id, err := parseJobOptions([]string{"JOB-001", "--criterion", "A1", "--provider", "github-actions", "--run-id", "123", "--attempt", "2", "--commit", "abc", "--conclusion", "success", "--evidence-url", "https://example.test/run/123", "--artifact", "report.zip", "--diagnostic", "--actor", "Control"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "JOB-001" || options.criterion != "A1" || options.provider != "github-actions" || options.runID != "123" || options.attempt != 2 || !options.diagnostic || len(options.artifacts) != 1 {
+		t.Fatalf("parsed external evidence options incorrectly: %+v", options)
+	}
+	if err := validateJobOptions("evidence", options); err != nil {
+		t.Fatalf("evidence options rejected: %v", err)
+	}
+	packet := jobPacket{AcceptanceCriteria: []jobCriterion{{ID: "A1", Statement: "the checks pass", Status: "pending"}}}
+	packet.ExternalEvidence = append(packet.ExternalEvidence, jobExternalEvidence{ID: "github-actions/123/2", Criterion: "A1", Diagnostic: true})
+	if err := acceptanceCriteriaError(packet); err == nil {
+		t.Fatal("diagnostic evidence incorrectly satisfied a criterion")
+	}
+}
+
 func TestJobScopeUsesExplicitCommit(t *testing.T) {
 	root := t.TempDir()
 	gitTest(t, root, "init", "-b", "main")
@@ -426,6 +463,33 @@ Build the service skeleton.
 	}
 	if len(packetAfterSecondReview.ReviewRounds) != 2 {
 		t.Fatalf("review rounds were overwritten: %+v", packetAfterSecondReview.ReviewRounds)
+	}
+	packetAfterSecondReview.AcceptanceCriteria = []jobCriterion{{ID: "A1", Statement: "the reviewed service is complete", Status: "pending"}}
+	if err := writeJob(root, packetAfterSecondReview, "# JOB-001\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := commitLifecycleRecord(root, []string{jobPath(root, "JOB-001")}, "Add acceptance criterion"); err != nil {
+		t.Fatal(err)
+	}
+	if err := jobEvidence(root, "JOB-001", jobOptions{criterion: "A1", provider: "github-actions", runID: "123", commit: fullBranchCommit, conclusion: "success", actor: "Control", diagnostic: true}); err != nil {
+		t.Fatalf("record diagnostic evidence: %v", err)
+	}
+	packetAfterEvidence, _, err := readJob(root, "JOB-001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if packetAfterEvidence.AcceptanceCriteria[0].Status != "pending" {
+		t.Fatalf("diagnostic evidence satisfied criterion unexpectedly: %+v", packetAfterEvidence.AcceptanceCriteria)
+	}
+	if err := jobEvidence(root, "JOB-001", jobOptions{criterion: "A1", provider: "github-actions", runID: "123", attempt: 2, commit: fullBranchCommit, conclusion: "success", actor: "Control", evidenceURL: "https://example.test/123"}); err != nil {
+		t.Fatalf("record satisfying evidence: %v", err)
+	}
+	packetAfterEvidence, _, err = readJob(root, "JOB-001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if packetAfterEvidence.AcceptanceCriteria[0].Status != "passed" || len(packetAfterEvidence.AcceptanceCriteria[0].Evidence) != 1 {
+		t.Fatalf("satisfying evidence did not update criterion: %+v", packetAfterEvidence.AcceptanceCriteria)
 	}
 	if err := jobApprove(root, "JOB-001", jobOptions{verdict: "accepted", approvedBy: "developer"}); err != nil {
 		t.Fatalf("approve job: %v", err)

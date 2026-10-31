@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,6 +31,7 @@ Usage:
   leadfox job review <id> [options]
   leadfox job approve <id> --verdict accepted|changes-requested
   leadfox job attest <id> --check GATE/CHECK --result passed [--note TEXT]
+  leadfox job evidence <id> --criterion ID --provider NAME --run-id ID --commit SHA --conclusion success|failure [options]
   leadfox job cancel <id> --reason TEXT
   leadfox job block <id> --reason TEXT
   leadfox job resume <id> [--reason TEXT]
@@ -52,6 +54,14 @@ Options:
       --actor NAME       Identity performing a lifecycle transition
       --reason TEXT       Reason for cancellation, blocking, or re-review
       --note TEXT         Attestation or approval note
+      --criterion ID      Acceptance criterion satisfied by external evidence
+      --provider NAME     External evidence provider (for example github-actions)
+      --run-id ID         External CI run identifier
+      --attempt N         External run attempt number (default: 1)
+      --conclusion VALUE  success, failure, cancelled, or timed_out
+      --evidence-url URL  Link to the external run or evidence
+      --artifact REF      Artifact reference (repeatable)
+      --diagnostic        Record evidence without satisfying the criterion
   -h, --help              Show this help message
 
 Review creates a clean detached worktree, resolves commits to full IDs,
@@ -61,43 +71,45 @@ checks scope, runs required gates, and records evidence before approval.
 const evidenceSchemaVersion = 2
 
 type jobPacket struct {
-	ID                 string              `yaml:"id"`
-	Status             string              `yaml:"status"`
-	Role               string              `yaml:"role"`
-	Objective          string              `yaml:"objective"`
-	BaseBranch         string              `yaml:"base_branch,omitempty"`
-	BaseCommit         string              `yaml:"base_commit,omitempty"`
-	Branch             string              `yaml:"branch,omitempty"`
-	BranchStartCommit  string              `yaml:"branch_start_commit,omitempty"`
-	ScopeBaseCommit    string              `yaml:"scope_base_commit,omitempty"`
-	Worktree           string              `yaml:"worktree,omitempty"`
-	ReviewCommit       string              `yaml:"review_commit,omitempty"`
-	ReviewWorktree     string              `yaml:"review_worktree,omitempty"`
-	ReviewWorktrees    []string            `yaml:"review_worktrees,omitempty"`
-	AllowedPaths       []string            `yaml:"allowed_paths,omitempty"`
-	ExcludedPaths      []string            `yaml:"excluded_paths,omitempty"`
-	Gates              []string            `yaml:"gates,omitempty"`
-	CreatedAt          string              `yaml:"created_at,omitempty"`
-	UpdatedAt          string              `yaml:"updated_at,omitempty"`
-	GateEvidence       []jobGateEvidence   `yaml:"gate_evidence,omitempty"`
-	ReviewRounds       []jobReviewRound    `yaml:"review_rounds,omitempty"`
-	ReviewSetup        []string            `yaml:"review_setup,omitempty"`
-	Attestations       []jobAttestation    `yaml:"attestations,omitempty"`
-	AttestationHistory []jobAttestation    `yaml:"attestation_history,omitempty"`
-	Transitions        []jobTransition     `yaml:"transitions,omitempty"`
-	Syncs              []jobSyncRecord     `yaml:"syncs,omitempty"`
-	RemovedWorktrees   []jobWorktreeRecord `yaml:"removed_worktrees,omitempty"`
-	ApprovedBy         string              `yaml:"approved_by,omitempty"`
-	ApprovedAt         string              `yaml:"approved_at,omitempty"`
-	MergeCommit        string              `yaml:"merge_commit,omitempty"`
-	TerminalReason     string              `yaml:"terminal_reason,omitempty"`
-	TerminalBy         string              `yaml:"terminal_by,omitempty"`
-	TerminalAt         string              `yaml:"terminal_at,omitempty"`
-	ResumeReason       string              `yaml:"resume_reason,omitempty"`
-	ResumeBy           string              `yaml:"resume_by,omitempty"`
-	ResumeAt           string              `yaml:"resume_at,omitempty"`
-	Supersedes         string              `yaml:"supersedes,omitempty"`
-	SupersededBy       string              `yaml:"superseded_by,omitempty"`
+	ID                 string                `yaml:"id"`
+	Status             string                `yaml:"status"`
+	Role               string                `yaml:"role"`
+	Objective          string                `yaml:"objective"`
+	BaseBranch         string                `yaml:"base_branch,omitempty"`
+	BaseCommit         string                `yaml:"base_commit,omitempty"`
+	Branch             string                `yaml:"branch,omitempty"`
+	BranchStartCommit  string                `yaml:"branch_start_commit,omitempty"`
+	ScopeBaseCommit    string                `yaml:"scope_base_commit,omitempty"`
+	Worktree           string                `yaml:"worktree,omitempty"`
+	ReviewCommit       string                `yaml:"review_commit,omitempty"`
+	ReviewWorktree     string                `yaml:"review_worktree,omitempty"`
+	ReviewWorktrees    []string              `yaml:"review_worktrees,omitempty"`
+	AllowedPaths       []string              `yaml:"allowed_paths,omitempty"`
+	ExcludedPaths      []string              `yaml:"excluded_paths,omitempty"`
+	Gates              []string              `yaml:"gates,omitempty"`
+	CreatedAt          string                `yaml:"created_at,omitempty"`
+	UpdatedAt          string                `yaml:"updated_at,omitempty"`
+	GateEvidence       []jobGateEvidence     `yaml:"gate_evidence,omitempty"`
+	ReviewRounds       []jobReviewRound      `yaml:"review_rounds,omitempty"`
+	ReviewSetup        []string              `yaml:"review_setup,omitempty"`
+	AcceptanceCriteria []jobCriterion        `yaml:"acceptance_criteria,omitempty"`
+	ExternalEvidence   []jobExternalEvidence `yaml:"external_evidence,omitempty"`
+	Attestations       []jobAttestation      `yaml:"attestations,omitempty"`
+	AttestationHistory []jobAttestation      `yaml:"attestation_history,omitempty"`
+	Transitions        []jobTransition       `yaml:"transitions,omitempty"`
+	Syncs              []jobSyncRecord       `yaml:"syncs,omitempty"`
+	RemovedWorktrees   []jobWorktreeRecord   `yaml:"removed_worktrees,omitempty"`
+	ApprovedBy         string                `yaml:"approved_by,omitempty"`
+	ApprovedAt         string                `yaml:"approved_at,omitempty"`
+	MergeCommit        string                `yaml:"merge_commit,omitempty"`
+	TerminalReason     string                `yaml:"terminal_reason,omitempty"`
+	TerminalBy         string                `yaml:"terminal_by,omitempty"`
+	TerminalAt         string                `yaml:"terminal_at,omitempty"`
+	ResumeReason       string                `yaml:"resume_reason,omitempty"`
+	ResumeBy           string                `yaml:"resume_by,omitempty"`
+	ResumeAt           string                `yaml:"resume_at,omitempty"`
+	Supersedes         string                `yaml:"supersedes,omitempty"`
+	SupersededBy       string                `yaml:"superseded_by,omitempty"`
 }
 
 type jobTransition struct {
@@ -140,6 +152,29 @@ type jobAttestation struct {
 	RecordedAt string `yaml:"recorded_at"`
 	ReplacedAt string `yaml:"replaced_at,omitempty"`
 	ReplacedBy string `yaml:"replaced_by,omitempty"`
+}
+
+type jobCriterion struct {
+	ID        string   `yaml:"id"`
+	Statement string   `yaml:"statement"`
+	Status    string   `yaml:"status"`
+	Evidence  []string `yaml:"evidence,omitempty"`
+	UpdatedAt string   `yaml:"updated_at,omitempty"`
+}
+
+type jobExternalEvidence struct {
+	ID         string   `yaml:"id"`
+	Criterion  string   `yaml:"criterion"`
+	Provider   string   `yaml:"provider"`
+	RunID      string   `yaml:"run_id"`
+	Attempt    int      `yaml:"attempt"`
+	Commit     string   `yaml:"commit"`
+	Conclusion string   `yaml:"conclusion"`
+	URL        string   `yaml:"url,omitempty"`
+	Artifacts  []string `yaml:"artifacts,omitempty"`
+	Diagnostic bool     `yaml:"diagnostic,omitempty"`
+	RecordedBy string   `yaml:"recorded_by"`
+	RecordedAt string   `yaml:"recorded_at"`
 }
 
 type evidenceState struct {
@@ -202,6 +237,10 @@ type setupEvidenceDocument struct {
 type jobOptions struct {
 	base, worktree, branch, commit, role, objective, verdict string
 	approvedBy, actor, reason, note, result, check           string
+	criterion, provider, runID, conclusion, evidenceURL      string
+	attempt                                                  int
+	diagnostic                                               bool
+	artifacts                                                []string
 	allow, exclude, gates, setup                             []string
 	showHelp                                                 bool
 	used                                                     map[string]bool
@@ -270,6 +309,8 @@ func runJobCommand(args []string) error {
 		return jobApprove(root, id, options)
 	case "attest":
 		return jobAttest(root, id, options)
+	case "evidence":
+		return jobEvidence(root, id, options)
 	case "cancel":
 		return jobTerminate(root, id, "cancelled", options)
 	case "block":
@@ -415,6 +456,63 @@ func parseJobOptions(args []string) (jobOptions, string, error) {
 				return o, id, e
 			}
 			o.check, i = v, n
+		case "--criterion":
+			o.used["criterion"] = true
+			v, n, e := requiredOptionValue(args, i, arg)
+			if e != nil {
+				return o, id, e
+			}
+			o.criterion, i = v, n
+		case "--provider":
+			o.used["provider"] = true
+			v, n, e := requiredOptionValue(args, i, arg)
+			if e != nil {
+				return o, id, e
+			}
+			o.provider, i = v, n
+		case "--run-id":
+			o.used["run-id"] = true
+			v, n, e := requiredOptionValue(args, i, arg)
+			if e != nil {
+				return o, id, e
+			}
+			o.runID, i = v, n
+		case "--attempt":
+			o.used["attempt"] = true
+			v, n, e := requiredOptionValue(args, i, arg)
+			if e != nil {
+				return o, id, e
+			}
+			parsedAttempt, scanErr := strconv.Atoi(v)
+			if scanErr != nil || parsedAttempt < 1 {
+				return o, id, fmt.Errorf("--attempt must be a positive integer")
+			}
+			o.attempt = parsedAttempt
+			i = n
+		case "--conclusion":
+			o.used["conclusion"] = true
+			v, n, e := requiredOptionValue(args, i, arg)
+			if e != nil {
+				return o, id, e
+			}
+			o.conclusion, i = v, n
+		case "--evidence-url":
+			o.used["evidence-url"] = true
+			v, n, e := requiredOptionValue(args, i, arg)
+			if e != nil {
+				return o, id, e
+			}
+			o.evidenceURL, i = v, n
+		case "--artifact":
+			o.used["artifact"] = true
+			v, n, e := requiredOptionValue(args, i, arg)
+			if e != nil {
+				return o, id, e
+			}
+			o.artifacts, i = append(o.artifacts, v), n
+		case "--diagnostic":
+			o.used["diagnostic"] = true
+			o.diagnostic = true
 		case "--allow":
 			o.used["allow"] = true
 			v, n, e := requiredOptionValue(args, i, arg)
@@ -462,19 +560,20 @@ func parseJobOptions(args []string) (jobOptions, string, error) {
 
 func validateJobOptions(operation string, o jobOptions) error {
 	allowed := map[string]map[string]bool{
-		"new":     {"base": true, "worktree": true, "branch": true, "role": true, "objective": true, "allow": true, "exclude": true, "gate": true, "setup": true},
-		"start":   {"base": true, "worktree": true, "branch": true},
-		"scope":   {"worktree": true, "commit": true},
-		"sync":    {"actor": true, "reason": true},
-		"review":  {"worktree": true, "commit": true, "reason": true},
-		"approve": {"verdict": true, "approved-by": true, "note": true},
-		"attest":  {"check": true, "result": true, "approved-by": true, "note": true},
-		"cancel":  {"reason": true, "actor": true, "approved-by": true},
-		"block":   {"reason": true, "actor": true, "approved-by": true},
-		"resume":  {"reason": true, "actor": true},
-		"reissue": {"reason": true, "actor": true},
-		"list":    {},
-		"merge":   {},
+		"new":      {"base": true, "worktree": true, "branch": true, "role": true, "objective": true, "allow": true, "exclude": true, "gate": true, "setup": true},
+		"start":    {"base": true, "worktree": true, "branch": true},
+		"scope":    {"worktree": true, "commit": true},
+		"sync":     {"actor": true, "reason": true},
+		"review":   {"worktree": true, "commit": true, "reason": true},
+		"approve":  {"verdict": true, "approved-by": true, "note": true},
+		"attest":   {"check": true, "result": true, "approved-by": true, "note": true},
+		"evidence": {"criterion": true, "provider": true, "run-id": true, "attempt": true, "commit": true, "conclusion": true, "evidence-url": true, "artifact": true, "diagnostic": true, "actor": true},
+		"cancel":   {"reason": true, "actor": true, "approved-by": true},
+		"block":    {"reason": true, "actor": true, "approved-by": true},
+		"resume":   {"reason": true, "actor": true},
+		"reissue":  {"reason": true, "actor": true},
+		"list":     {},
+		"merge":    {},
 	}
 	operationAllowed, found := allowed[operation]
 	if !found {
@@ -1297,6 +1396,104 @@ func appendScopeAttestations(worktree string, packet jobPacket) []jobAttestation
 	return packet.Attestations
 }
 
+func acceptanceCriteriaError(packet jobPacket) error {
+	if len(packet.AcceptanceCriteria) == 0 {
+		return nil
+	}
+	var pending, failed []string
+	for _, criterion := range packet.AcceptanceCriteria {
+		switch strings.ToLower(strings.TrimSpace(criterion.Status)) {
+		case "passed", "waived":
+		case "failed":
+			failed = append(failed, criterion.ID)
+		default:
+			pending = append(pending, criterion.ID)
+		}
+	}
+	if len(failed) > 0 {
+		return fmt.Errorf("failed acceptance criteria: %s", strings.Join(failed, ", "))
+	}
+	if len(pending) > 0 {
+		return fmt.Errorf("pending acceptance criteria: %s", strings.Join(pending, ", "))
+	}
+	return nil
+}
+
+func jobEvidence(root, id string, o jobOptions) error {
+	packet, body, err := readJob(root, id)
+	if err != nil {
+		return err
+	}
+	if len(packet.AcceptanceCriteria) == 0 {
+		return errors.New("job declares no acceptance criteria")
+	}
+	if packet.Status != "review" && packet.Status != "review-pending" && packet.Status != "review-failed" {
+		return fmt.Errorf("job %s is %q; external evidence requires a review result", id, packet.Status)
+	}
+	if o.criterion == "" || o.provider == "" || o.runID == "" || o.commit == "" || o.conclusion == "" || o.actor == "" {
+		return errors.New("--criterion, --provider, --run-id, --commit, --conclusion, and --actor are required")
+	}
+	commit, err := resolveCommit(root, o.commit)
+	if err != nil {
+		return fmt.Errorf("resolve evidence commit: %w", err)
+	}
+	if packet.ReviewCommit != "" && commit != packet.ReviewCommit {
+		return fmt.Errorf("evidence commit %s does not match reviewed commit %s", commit, packet.ReviewCommit)
+	}
+	criterionIndex := -1
+	for index := range packet.AcceptanceCriteria {
+		if packet.AcceptanceCriteria[index].ID == o.criterion {
+			criterionIndex = index
+			break
+		}
+	}
+	if criterionIndex < 0 {
+		return fmt.Errorf("unknown acceptance criterion %q", o.criterion)
+	}
+	conclusion := strings.ToLower(strings.TrimSpace(o.conclusion))
+	switch conclusion {
+	case "success", "failure", "cancelled", "timed_out":
+	default:
+		return errors.New("--conclusion must be success, failure, cancelled, or timed_out")
+	}
+	attempt := o.attempt
+	if attempt == 0 {
+		attempt = 1
+	}
+	evidenceID := fmt.Sprintf("%s/%s/%d", o.provider, o.runID, attempt)
+	for _, existing := range packet.ExternalEvidence {
+		if existing.ID == evidenceID {
+			return fmt.Errorf("external evidence %q is already recorded", evidenceID)
+		}
+	}
+	recordedAt := time.Now().UTC().Format(time.RFC3339)
+	evidence := jobExternalEvidence{ID: evidenceID, Criterion: o.criterion, Provider: o.provider, RunID: o.runID, Attempt: attempt, Commit: commit, Conclusion: conclusion, URL: o.evidenceURL, Artifacts: uniqueStrings(o.artifacts), Diagnostic: o.diagnostic, RecordedBy: o.actor, RecordedAt: recordedAt}
+	packet.ExternalEvidence = append(packet.ExternalEvidence, evidence)
+	criterion := &packet.AcceptanceCriteria[criterionIndex]
+	if !o.diagnostic {
+		if conclusion == "success" {
+			criterion.Status = "passed"
+		} else {
+			criterion.Status = "failed"
+		}
+		criterion.Evidence = appendUnique(criterion.Evidence, evidenceID)
+		criterion.UpdatedAt = recordedAt
+	}
+	packet.UpdatedAt = recordedAt
+	if err := writeJob(root, packet, body); err != nil {
+		return err
+	}
+	if err := commitLifecycleRecord(root, []string{jobPath(root, id)}, "Record external evidence "+id); err != nil {
+		return err
+	}
+	if o.diagnostic {
+		fmt.Printf("Recorded diagnostic evidence %s for %s\n", evidenceID, id)
+	} else {
+		fmt.Printf("Recorded external evidence %s for %s\n", evidenceID, id)
+	}
+	return nil
+}
+
 func jobApprove(root, id string, o jobOptions) error {
 	packet, body, err := readJob(root, id)
 	if err != nil {
@@ -1310,6 +1507,11 @@ func jobApprove(root, id string, o jobOptions) error {
 	}
 	if strings.TrimSpace(o.approvedBy) == "" {
 		return errors.New("--approved-by is required so the approval identity is explicit")
+	}
+	if o.verdict == "accepted" {
+		if err := acceptanceCriteriaError(packet); err != nil {
+			return err
+		}
 	}
 	if len(packet.Gates) > 0 {
 		if len(packet.GateEvidence) != len(packet.Gates) {

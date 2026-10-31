@@ -30,8 +30,15 @@ history.
 ## Phase 3 — structured evidence
 
 - Represent acceptance criteria and their evidence references in job metadata.
-- Record external CI run IDs, attempts, conclusions, and artifact references.
+- Record external CI run IDs, attempts, conclusions, and artifact references with
+  `leadfox job evidence`.
 - Distinguish diagnostic reruns from evidence that satisfies approval.
+- Require all declared criteria to be passed or waived before an accepted
+  approval; jobs without criteria retain their previous behavior.
+
+Implemented in the current lifecycle upgrade. External evidence is tied to the
+reviewed commit, duplicate run attempts are rejected, and diagnostic evidence
+is retained without satisfying a criterion.
 
 ## Phase 4 — distribution and execution
 
