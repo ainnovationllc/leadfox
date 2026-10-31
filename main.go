@@ -18,6 +18,7 @@ Commands:
   gate run <name>   Execute a project gate and report evidence
   job <operation>   Manage a bounded agent job lifecycle
   assurance report  Report declared assurance evidence coverage
+  security scan     Run the configured secret scanner
   version [--json]  Show the Leadfox version and build information
   help              Show this help message
 
@@ -106,6 +107,11 @@ func main() {
 		}
 	case "assurance":
 		if err := runAssuranceCommand(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(1)
+		}
+	case "security":
+		if err := runSecurityCommand(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "Error:", err)
 			os.Exit(1)
 		}
@@ -297,6 +303,19 @@ gates: []
 # Evidence coverage is an audit aid; it is not a compliance certification.
 frameworks: []
 controls: []
+`,
+		"control/security.yaml": `# Project-configured secret scanning.
+# Keep scanner binaries outside the repository and pin their versions here.
+# TruffleHog verification is an external operation and is not allowed in the
+# default local gate.
+secret_scanning:
+  enabled: false
+  tool: gitleaks
+  binary: gitleaks
+  version: ""
+  mode: history
+  report_path: control/evidence/secret-scan.json
+  allow_network: false
 `,
 		"control/settings/README.md": `# Settings
 

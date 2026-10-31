@@ -72,6 +72,20 @@ The model is framework-neutral. SOC 2 mappings may be declared by a consuming
 project, but SOC 2 control language and compliance decisions are not embedded
 in Leadfox.
 
+## Phase 6 — secret scanning (implemented)
+
+- Add project-controlled `control/security.yaml` scanner configuration.
+- Add `leadfox security scan` with pinned scanner-version enforcement and
+  history or working-tree modes.
+- Support Gitleaks as the deterministic offline gate adapter.
+- Permit TruffleHog only as a non-verifying local scan; active verification is
+  an explicitly external evidence operation because it may call credential
+  provider APIs.
+- Redact scanner report fields that can contain secret material before reports
+  are retained.
+- Keep scanner artifacts and findings separate from compliance certification;
+  findings still require remediation, rotation and auditor review.
+
 ## Explicit boundary
 
 Leadfox must not absorb project-specific assumptions such as Canvas, a
