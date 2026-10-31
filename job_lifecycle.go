@@ -25,6 +25,8 @@ Usage:
   leadfox job new <id> [options]
   leadfox job start <id> [options]
   leadfox job scope <id> [options]
+  leadfox job sync <id> [--actor NAME] [--reason TEXT]
+  leadfox job reissue <old-id> <new-id> [--reason TEXT]
   leadfox job review <id> [options]
   leadfox job approve <id> --verdict accepted|changes-requested
   leadfox job attest <id> --check GATE/CHECK --result passed [--note TEXT]
@@ -67,6 +69,7 @@ type jobPacket struct {
 	BaseCommit         string              `yaml:"base_commit,omitempty"`
 	Branch             string              `yaml:"branch,omitempty"`
 	BranchStartCommit  string              `yaml:"branch_start_commit,omitempty"`
+	ScopeBaseCommit    string              `yaml:"scope_base_commit,omitempty"`
 	Worktree           string              `yaml:"worktree,omitempty"`
 	ReviewCommit       string              `yaml:"review_commit,omitempty"`
 	ReviewWorktree     string              `yaml:"review_worktree,omitempty"`
@@ -82,6 +85,7 @@ type jobPacket struct {
 	Attestations       []jobAttestation    `yaml:"attestations,omitempty"`
 	AttestationHistory []jobAttestation    `yaml:"attestation_history,omitempty"`
 	Transitions        []jobTransition     `yaml:"transitions,omitempty"`
+	Syncs              []jobSyncRecord     `yaml:"syncs,omitempty"`
 	RemovedWorktrees   []jobWorktreeRecord `yaml:"removed_worktrees,omitempty"`
 	ApprovedBy         string              `yaml:"approved_by,omitempty"`
 	ApprovedAt         string              `yaml:"approved_at,omitempty"`
@@ -92,6 +96,8 @@ type jobPacket struct {
 	ResumeReason       string              `yaml:"resume_reason,omitempty"`
 	ResumeBy           string              `yaml:"resume_by,omitempty"`
 	ResumeAt           string              `yaml:"resume_at,omitempty"`
+	Supersedes         string              `yaml:"supersedes,omitempty"`
+	SupersededBy       string              `yaml:"superseded_by,omitempty"`
 }
 
 type jobTransition struct {
@@ -100,6 +106,17 @@ type jobTransition struct {
 	Reason     string `yaml:"reason,omitempty"`
 	Actor      string `yaml:"actor"`
 	RecordedAt string `yaml:"recorded_at"`
+}
+
+type jobSyncRecord struct {
+	BaseBranch       string `yaml:"base_branch"`
+	PreviousJobHead  string `yaml:"previous_job_head"`
+	BaseHead         string `yaml:"base_head"`
+	MergeBase        string `yaml:"merge_base"`
+	ResultingJobHead string `yaml:"resulting_job_head"`
+	Actor            string `yaml:"actor"`
+	Reason           string `yaml:"reason,omitempty"`
+	RecordedAt       string `yaml:"recorded_at"`
 }
 
 type jobGateEvidence struct {
@@ -196,6 +213,27 @@ func runJobCommand(args []string) error {
 		return nil
 	}
 	operation := args[0]
+	if operation == "reissue" {
+		if len(args) < 3 {
+			return errors.New("job reissue requires OLD-ID and NEW-ID")
+		}
+		oldID, newID := args[1], args[2]
+		options, parsedID, err := parseJobOptions(append([]string{newID}, args[3:]...))
+		if err != nil {
+			return err
+		}
+		if parsedID != newID {
+			return errors.New("job reissue requires OLD-ID and NEW-ID before options")
+		}
+		if err := validateJobOptions(operation, options); err != nil {
+			return err
+		}
+		root, err := gitRoot(".")
+		if err != nil {
+			return err
+		}
+		return jobReissue(root, oldID, newID, options)
+	}
 	options, id, err := parseJobOptions(args[1:])
 	if err != nil {
 		return err
@@ -224,6 +262,8 @@ func runJobCommand(args []string) error {
 		return jobStart(root, id, options)
 	case "scope":
 		return jobScope(root, id, options)
+	case "sync":
+		return jobSync(root, id, options)
 	case "review":
 		return jobReview(root, id, options)
 	case "approve":
@@ -236,6 +276,8 @@ func runJobCommand(args []string) error {
 		return jobTerminate(root, id, "blocked", options)
 	case "resume":
 		return jobResume(root, id, options)
+	case "reissue":
+		return errors.New("job reissue requires an old and new job ID")
 	case "list":
 		return jobList(root)
 	case "merge":
@@ -423,12 +465,14 @@ func validateJobOptions(operation string, o jobOptions) error {
 		"new":     {"base": true, "worktree": true, "branch": true, "role": true, "objective": true, "allow": true, "exclude": true, "gate": true, "setup": true},
 		"start":   {"base": true, "worktree": true, "branch": true},
 		"scope":   {"worktree": true, "commit": true},
+		"sync":    {"actor": true, "reason": true},
 		"review":  {"worktree": true, "commit": true, "reason": true},
 		"approve": {"verdict": true, "approved-by": true, "note": true},
 		"attest":  {"check": true, "result": true, "approved-by": true, "note": true},
 		"cancel":  {"reason": true, "actor": true, "approved-by": true},
 		"block":   {"reason": true, "actor": true, "approved-by": true},
 		"resume":  {"reason": true, "actor": true},
+		"reissue": {"reason": true, "actor": true},
 		"list":    {},
 		"merge":   {},
 	}
@@ -616,8 +660,101 @@ func jobScope(root, id string, o jobOptions) error {
 	return checkJobScope(root, packet, worktree, target)
 }
 
+func jobSync(root, id string, o jobOptions) error {
+	packet, body, err := readJob(root, id)
+	if err != nil {
+		return err
+	}
+	if packet.Status != "running" && packet.Status != "blocked" {
+		return fmt.Errorf("job %s is %q; only running or blocked jobs may sync", id, packet.Status)
+	}
+	if packet.Branch == "" || packet.Worktree == "" {
+		return errors.New("job has no branch or worktree to synchronize")
+	}
+	if o.actor == "" {
+		return errors.New("--actor is required for synchronization")
+	}
+	if !mustBeClean(root, "Control worktree") {
+		return errors.New("Control worktree is not clean")
+	}
+	if !mustBeClean(packet.Worktree, "job worktree") {
+		return errors.New("job worktree is not clean")
+	}
+	baseBranch := packet.BaseBranch
+	if baseBranch == "" {
+		baseBranch = "main"
+	}
+	baseHead, err := gitOutput(root, "rev-parse", baseBranch+"^{commit}")
+	if err != nil {
+		return fmt.Errorf("resolve base branch: %w", err)
+	}
+	baseHead = strings.TrimSpace(baseHead)
+	jobHead, err := gitOutput(packet.Worktree, "rev-parse", "HEAD^{commit}")
+	if err != nil {
+		return fmt.Errorf("resolve job head: %w", err)
+	}
+	jobHead = strings.TrimSpace(jobHead)
+	mergeBase, err := gitOutput(root, "merge-base", baseHead, jobHead)
+	if err != nil {
+		return fmt.Errorf("find merge base: %w", err)
+	}
+	mergeBase = strings.TrimSpace(mergeBase)
+	if _, err := gitOutput(packet.Worktree, "merge", "--no-ff", "--no-edit", baseHead); err != nil {
+		_, _ = gitOutput(packet.Worktree, "merge", "--abort")
+		return fmt.Errorf("synchronize job branch with %s: %w", baseBranch, err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	// After synchronization, scope is measured against the synchronized base
+	// tip. The merge base is retained for provenance; using it as the diff
+	// baseline would incorrectly count files introduced by the base branch.
+	packet.ScopeBaseCommit = baseHead
+	packet.Syncs = append(packet.Syncs, jobSyncRecord{BaseBranch: baseBranch, PreviousJobHead: jobHead, BaseHead: baseHead, MergeBase: mergeBase, Actor: o.actor, Reason: o.reason, RecordedAt: now})
+	packet.UpdatedAt = now
+	if err := writeJob(root, packet, body); err != nil {
+		return err
+	}
+	if err := commitLifecycleRecord(root, []string{jobPath(root, id)}, "Record sync "+id); err != nil {
+		return err
+	}
+	lifecycleHead, err := gitOutput(root, "rev-parse", "HEAD^{commit}")
+	if err != nil {
+		return fmt.Errorf("resolve sync record: %w", err)
+	}
+	if _, err := gitOutput(packet.Worktree, "merge", "--no-ff", "--no-edit", strings.TrimSpace(lifecycleHead)); err != nil {
+		return fmt.Errorf("advance job branch with sync record: %w", err)
+	}
+	resultingHead, err := gitOutput(packet.Worktree, "rev-parse", "HEAD^{commit}")
+	if err != nil {
+		return fmt.Errorf("resolve synchronized job head: %w", err)
+	}
+	packet.Syncs[len(packet.Syncs)-1].ResultingJobHead = strings.TrimSpace(resultingHead)
+	packet.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	if err := writeJob(root, packet, body); err != nil {
+		return err
+	}
+	if err := commitLifecycleRecord(root, []string{jobPath(root, id)}, "Record sync result "+id); err != nil {
+		return err
+	}
+	fmt.Printf("Synchronized %s with %s; scope baseline is %s (merge base %s)\n", id, baseBranch, baseHead, mergeBase)
+	return nil
+}
+
+func mustBeClean(path, label string) bool {
+	clean, err := gitClean(path)
+	if err != nil || !clean {
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%s status unavailable: %v\n", label, err)
+		}
+		return false
+	}
+	return true
+}
+
 func checkJobScope(root string, packet jobPacket, worktree, commit string) error {
 	baseCommit := packet.BaseCommit
+	if packet.ScopeBaseCommit != "" {
+		baseCommit = packet.ScopeBaseCommit
+	}
 	if baseCommit == "" {
 		baseCommit = packet.BaseBranch
 	}
@@ -1588,6 +1725,94 @@ func jobResume(root, id string, o jobOptions) error {
 		return err
 	}
 	fmt.Printf("Resumed %s by %s\n", id, actor)
+	return nil
+}
+
+func jobReissue(root, oldID, newID string, o jobOptions) error {
+	if !regexp.MustCompile(`^[A-Za-z0-9._-]+$`).MatchString(newID) {
+		return fmt.Errorf("invalid job ID %q", newID)
+	}
+	if oldID == newID {
+		return errors.New("old and new job IDs must differ")
+	}
+	oldPacket, oldBody, err := readJob(root, oldID)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(jobPath(root, newID)); err == nil {
+		return fmt.Errorf("job packet already exists: %s", jobPath(root, newID))
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if oldPacket.Status == "merged" {
+		return fmt.Errorf("job %s is merged and cannot be reissued", oldID)
+	}
+	if o.actor == "" {
+		return errors.New("--actor is required for reissue")
+	}
+	if o.reason == "" {
+		return errors.New("--reason is required for reissue")
+	}
+	if oldPacket.Status != "cancelled" {
+		if err := jobTerminate(root, oldID, "cancelled", jobOptions{reason: "superseded by " + newID + ": " + o.reason, actor: o.actor}); err != nil {
+			return err
+		}
+	}
+	oldPacket, oldBody, err = readJob(root, oldID)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	oldPacket.SupersededBy = newID
+	oldPacket.UpdatedAt = now
+	if err := writeJob(root, oldPacket, oldBody); err != nil {
+		return err
+	}
+	if err := commitLifecycleRecord(root, []string{jobPath(root, oldID)}, "Record supersede "+oldID); err != nil {
+		return err
+	}
+
+	newPacket := oldPacket
+	newPacket.ID = newID
+	newPacket.Status = "draft"
+	newPacket.Supersedes = oldID
+	newPacket.SupersededBy = ""
+	newPacket.BaseCommit = ""
+	newPacket.Branch = ""
+	newPacket.BranchStartCommit = ""
+	newPacket.ScopeBaseCommit = ""
+	newPacket.Worktree = ""
+	newPacket.ReviewCommit = ""
+	newPacket.ReviewWorktree = ""
+	newPacket.ReviewWorktrees = nil
+	newPacket.GateEvidence = nil
+	newPacket.ReviewRounds = nil
+	newPacket.ReviewSetup = append([]string(nil), oldPacket.ReviewSetup...)
+	newPacket.Attestations = nil
+	newPacket.AttestationHistory = nil
+	newPacket.Transitions = nil
+	newPacket.Syncs = nil
+	newPacket.RemovedWorktrees = nil
+	newPacket.ApprovedBy = ""
+	newPacket.ApprovedAt = ""
+	newPacket.MergeCommit = ""
+	newPacket.TerminalReason = ""
+	newPacket.TerminalBy = ""
+	newPacket.TerminalAt = ""
+	newPacket.ResumeReason = ""
+	newPacket.ResumeBy = ""
+	newPacket.ResumeAt = ""
+	newPacket.CreatedAt = now
+	newPacket.UpdatedAt = now
+	newBody := strings.Replace(oldBody, "# "+oldID, "# "+newID, 1)
+	newBody += fmt.Sprintf("\n\n## Reissue\n\nSupersedes `%s`. Source packet and acceptance criteria were carried forward by Control; commits were not rewritten.\n", oldID)
+	if err := writeJob(root, newPacket, newBody); err != nil {
+		return err
+	}
+	if err := commitLifecycleRecord(root, []string{jobPath(root, newID)}, "Create reissued job "+newID); err != nil {
+		return err
+	}
+	fmt.Printf("Reissued %s as %s\n", oldID, newID)
 	return nil
 }
 

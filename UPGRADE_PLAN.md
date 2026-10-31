@@ -3,14 +3,16 @@
 This roadmap keeps Leadfox project-agnostic. Project-specific harnesses,
 platform adapters, and agent instructions remain in the consuming project.
 
-## Phase 1 — lifecycle correctness
+## Phase 1 — lifecycle correctness (implemented)
 
 - Reject command options that a job subcommand does not support.
 - Make `job scope --commit` evaluate the requested commit and identify it in
   the result.
 - Add regression tests that prove an ignored option or wrong scope input fails.
 
-## Phase 2 — long-running jobs
+Implemented in commit `21c49b9`.
+
+## Phase 2 — long-running jobs (implemented)
 
 - Add an explicit synchronization operation for bringing a job up to date with
   its base branch.
@@ -19,6 +21,11 @@ platform adapters, and agent instructions remain in the consuming project.
 - Add a supersede/reissue operation that preserves criteria, decisions,
   deviations, and source-job history without rewriting commits.
 - Keep cancel-and-reissue as the safe fallback until synchronization is used.
+
+Implemented in the current lifecycle upgrade. Synchronization records the
+merge base for provenance and evaluates scope against the synchronized base
+tip; reissue preserves criteria and links the superseded job without rewriting
+history.
 
 ## Phase 3 — structured evidence
 

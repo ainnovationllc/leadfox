@@ -90,6 +90,114 @@ func TestJobScopeUsesExplicitCommit(t *testing.T) {
 	}
 }
 
+func TestJobReissuePreservesCriteriaAndHistory(t *testing.T) {
+	root := t.TempDir()
+	gitTest(t, root, "init", "-b", "main")
+	gitTest(t, root, "config", "user.email", "leadfox@example.test")
+	gitTest(t, root, "config", "user.name", "Leadfox Test")
+	if err := os.MkdirAll(filepath.Join(root, "control", "jobs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	packet := `---
+id: JOB-OLD
+status: ready
+role: integration
+objective: Preserve this bounded objective.
+base_branch: main
+allowed_paths:
+  - services/example/**
+gates:
+  - local-dev
+---
+# JOB-OLD
+
+Carry the acceptance criteria forward.
+`
+	if err := os.WriteFile(jobPath(root, "JOB-OLD"), []byte(packet), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, root, "add", ".")
+	gitTest(t, root, "commit", "-m", "initial")
+	if err := jobReissue(root, "JOB-OLD", "JOB-NEW", jobOptions{actor: "Control", reason: "new base required"}); err != nil {
+		t.Fatalf("reissue job: %v", err)
+	}
+	old, _, err := readJob(root, "JOB-OLD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	newJob, newBody, err := readJob(root, "JOB-NEW")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if old.Status != "cancelled" || old.SupersededBy != "JOB-NEW" {
+		t.Fatalf("old job was not superseded: %+v", old)
+	}
+	if newJob.Status != "draft" || newJob.Supersedes != "JOB-OLD" || newJob.Objective != "Preserve this bounded objective." || len(newJob.Gates) != 1 {
+		t.Fatalf("new job did not preserve criteria: %+v", newJob)
+	}
+	if !strings.Contains(newBody, "Supersedes `JOB-OLD`") {
+		t.Fatalf("reissue provenance missing from body: %s", newBody)
+	}
+}
+
+func TestJobSyncUsesSynchronizedBaseForScope(t *testing.T) {
+	root := t.TempDir()
+	gitTest(t, root, "init", "-b", "main")
+	gitTest(t, root, "config", "user.email", "leadfox@example.test")
+	gitTest(t, root, "config", "user.name", "Leadfox Test")
+	if err := os.MkdirAll(filepath.Join(root, "control", "jobs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	packet := `---
+id: JOB-SYNC
+status: ready
+role: service
+objective: Test synchronization.
+base_branch: main
+allowed_paths:
+  - services/example/**
+---
+# JOB-SYNC
+`
+	if err := os.WriteFile(jobPath(root, "JOB-SYNC"), []byte(packet), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "services", "example"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "services", "example", "README.md"), []byte("initial\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, root, "add", ".")
+	gitTest(t, root, "commit", "-m", "initial")
+	jobWorktree := filepath.Join(root, "..", "job-sync-worktree")
+	if err := jobStart(root, "JOB-SYNC", jobOptions{worktree: jobWorktree}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "docs", "base.md"), []byte("base update\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, root, "add", ".")
+	gitTest(t, root, "commit", "-m", "advance base")
+	baseHead := strings.TrimSpace(gitTest(t, root, "rev-parse", "HEAD"))
+	if err := jobSync(root, "JOB-SYNC", jobOptions{actor: "Control", reason: "bring job current"}); err != nil {
+		t.Fatalf("sync job: %v", err)
+	}
+	updated, _, err := readJob(root, "JOB-SYNC")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.ScopeBaseCommit != baseHead || len(updated.Syncs) != 1 || updated.Syncs[0].BaseHead != baseHead {
+		t.Fatalf("synchronization metadata is wrong: %+v", updated)
+	}
+	if err := jobScope(root, "JOB-SYNC", jobOptions{}); err != nil {
+		t.Fatalf("base changes were incorrectly included in scope: %v", err)
+	}
+}
+
 func TestScopeAttestationDoesNotApproveOtherManualChecks(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "control"), 0o755); err != nil {
