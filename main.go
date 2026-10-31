@@ -17,7 +17,7 @@ Commands:
   plan              Create an architecture plan from requirements
   gate run <name>   Execute a project gate and report evidence
   job <operation>   Manage a bounded agent job lifecycle
-  version           Show the Leadfox version
+  version [--json]  Show the Leadfox version and build information
   help              Show this help message
 
 Options:
@@ -38,6 +38,7 @@ Options:
   -w, --worktree DIR   Execute from a project worktree
   -f, --format FORMAT  Output markdown (default) or json
   -t, --timeout D      Per-check timeout (default 10m)
+  -r, --repeat N       Repeat the gate N times and report pass/fail consistency
   -h, --help           Show this help message
 `
 
@@ -69,7 +70,19 @@ func main() {
 	case "-h", "--help", "help":
 		fmt.Print(helpText)
 	case "version", "--version":
-		fmt.Println(leadfoxVersion())
+		if len(os.Args) > 2 && os.Args[2] == "--json" {
+			encoded, err := leadfoxBuildInfoJSON()
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "Error:", err)
+				os.Exit(1)
+			}
+			fmt.Println(encoded)
+		} else if len(os.Args) > 2 {
+			fmt.Fprintf(os.Stderr, "Error: unknown version option %q\n", os.Args[2])
+			os.Exit(1)
+		} else {
+			fmt.Println(leadfoxVersion())
+		}
 	case "init":
 		if err := runInit(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "Error:", err)

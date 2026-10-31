@@ -205,6 +205,8 @@ type gateEvidenceDocument struct {
 	Commit        string           `yaml:"commit"`
 	RecordedAt    string           `yaml:"recorded_at"`
 	Leadfox       string           `yaml:"leadfox"`
+	Platform      platformIdentity `yaml:"platform"`
+	Applicability string           `yaml:"applicability"`
 	SetupEvidence string           `yaml:"setup_evidence,omitempty"`
 	Attestations  []jobAttestation `yaml:"attestations,omitempty"`
 	Result        gateResult       `yaml:"result"`
@@ -975,7 +977,7 @@ func runJobGates(root string, packet jobPacket, worktree, commit string, setupEr
 				evidenceResult.Checks[index].OutputEncoding = "base64"
 			}
 		}
-		document := gateEvidenceDocument{SchemaVersion: evidenceSchemaVersion, Job: packet.ID, Round: round, Commit: commit, RecordedAt: time.Now().UTC().Format(time.RFC3339), Leadfox: leadfoxVersion(), SetupEvidence: setupPath, Attestations: packet.Attestations, Result: evidenceResult}
+		document := gateEvidenceDocument{SchemaVersion: evidenceSchemaVersion, Job: packet.ID, Round: round, Commit: commit, RecordedAt: time.Now().UTC().Format(time.RFC3339), Leadfox: leadfoxVersion(), Platform: evidenceResult.Platform, Applicability: evidenceResult.Applicability, SetupEvidence: setupPath, Attestations: packet.Attestations, Result: evidenceResult}
 		encoded, err := yaml.Marshal(document)
 		if err != nil {
 			return nil, fmt.Errorf("encode gate evidence: %w", err)

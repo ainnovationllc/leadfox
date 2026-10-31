@@ -9,7 +9,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,7 +24,14 @@ type gateOptions struct {
 	worktree string
 	format   string
 	timeout  time.Duration
+	repeat   int
 	showHelp bool
+}
+
+type platformIdentity struct {
+	OS     string `json:"os" yaml:"os"`
+	Arch   string `json:"arch" yaml:"arch"`
+	Runner string `json:"runner,omitempty" yaml:"runner,omitempty"`
 }
 
 type gateFile struct {
@@ -60,12 +69,27 @@ type checkResult struct {
 }
 
 type gateResult struct {
-	Gate       string        `json:"gate" yaml:"gate"`
-	Worktree   string        `json:"worktree" yaml:"worktree"`
-	StartedAt  time.Time     `json:"started_at" yaml:"started_at"`
-	FinishedAt time.Time     `json:"finished_at" yaml:"finished_at"`
-	Status     string        `json:"status" yaml:"status"`
-	Checks     []checkResult `json:"checks" yaml:"checks"`
+	Gate          string           `json:"gate" yaml:"gate"`
+	Worktree      string           `json:"worktree" yaml:"worktree"`
+	StartedAt     time.Time        `json:"started_at" yaml:"started_at"`
+	FinishedAt    time.Time        `json:"finished_at" yaml:"finished_at"`
+	Status        string           `json:"status" yaml:"status"`
+	Checks        []checkResult    `json:"checks" yaml:"checks"`
+	Platform      platformIdentity `json:"platform" yaml:"platform"`
+	Applicable    bool             `json:"applicable" yaml:"applicable"`
+	Applicability string           `json:"applicability,omitempty" yaml:"applicability,omitempty"`
+}
+
+type repeatGateResult struct {
+	SchemaVersion int          `json:"schema_version" yaml:"schema_version"`
+	Leadfox       string       `json:"leadfox" yaml:"leadfox"`
+	Gate          string       `json:"gate" yaml:"gate"`
+	Repeat        int          `json:"repeat" yaml:"repeat"`
+	Runs          []gateResult `json:"runs" yaml:"runs"`
+	Passed        int          `json:"passed" yaml:"passed"`
+	Failed        int          `json:"failed" yaml:"failed"`
+	Flaky         bool         `json:"flaky" yaml:"flaky"`
+	Status        string       `json:"status" yaml:"status"`
 }
 
 func runGateCommand(args []string) error {
@@ -91,27 +115,43 @@ func runGateCommand(args []string) error {
 	if err != nil {
 		return fmt.Errorf("resolve worktree: %w", err)
 	}
-	result, err := executeGate(root, options)
-	if err != nil {
-		return err
+	if options.repeat == 1 {
+		result, err := executeGate(root, options)
+		if err != nil {
+			return err
+		}
+		if options.format == "json" {
+			encoded, marshalErr := json.MarshalIndent(result, "", "  ")
+			if marshalErr != nil {
+				return fmt.Errorf("encode gate result: %w", marshalErr)
+			}
+			fmt.Println(string(encoded))
+		} else {
+			fmt.Print(renderGateMarkdown(result))
+		}
+		if result.Status == "failed" {
+			return errors.New("gate failed")
+		}
+		return nil
 	}
+	report := repeatGate(root, options)
 	if options.format == "json" {
-		encoded, marshalErr := json.MarshalIndent(result, "", "  ")
+		encoded, marshalErr := json.MarshalIndent(report, "", "  ")
 		if marshalErr != nil {
-			return fmt.Errorf("encode gate result: %w", marshalErr)
+			return fmt.Errorf("encode repeat gate result: %w", marshalErr)
 		}
 		fmt.Println(string(encoded))
 	} else {
-		fmt.Print(renderGateMarkdown(result))
+		fmt.Print(renderRepeatGateMarkdown(report))
 	}
-	if result.Status == "failed" {
+	if report.Status == "failed" {
 		return errors.New("gate failed")
 	}
 	return nil
 }
 
 func parseGateOptions(args []string) (gateOptions, error) {
-	options := gateOptions{worktree: ".", format: "markdown", timeout: 10 * time.Minute}
+	options := gateOptions{worktree: ".", format: "markdown", timeout: 10 * time.Minute, repeat: 1}
 	for index := 0; index < len(args); index++ {
 		arg := args[index]
 		switch arg {
@@ -148,6 +188,17 @@ func parseGateOptions(args []string) (gateOptions, error) {
 				return options, fmt.Errorf("invalid timeout %q", value)
 			}
 			options.timeout = duration
+			index = next
+		case "-r", "--repeat":
+			value, next, err := requiredOptionValue(args, index, arg)
+			if err != nil {
+				return options, err
+			}
+			count, parseErr := strconv.Atoi(value)
+			if parseErr != nil || count < 1 {
+				return options, fmt.Errorf("invalid repeat count %q", value)
+			}
+			options.repeat = count
 			index = next
 		default:
 			if strings.HasPrefix(arg, "-") {
@@ -193,15 +244,18 @@ func executeGate(root string, options gateOptions) (gateResult, error) {
 	}
 	if selected.Manual {
 		return gateResult{
-			Gate:       selected.ID,
-			Worktree:   root,
-			StartedAt:  time.Now().UTC(),
-			FinishedAt: time.Now().UTC(),
-			Status:     "manual",
+			Gate:          selected.ID,
+			Worktree:      root,
+			StartedAt:     time.Now().UTC(),
+			FinishedAt:    time.Now().UTC(),
+			Status:        "manual",
+			Platform:      currentPlatform(),
+			Applicable:    true,
+			Applicability: "applicable",
 		}, nil
 	}
 
-	result := gateResult{Gate: selected.ID, Worktree: root, StartedAt: time.Now().UTC()}
+	result := gateResult{Gate: selected.ID, Worktree: root, StartedAt: time.Now().UTC(), Platform: currentPlatform(), Applicable: true, Applicability: "applicable"}
 	for _, item := range selected.Checks {
 		if options.checkID != "" && item.ID != options.checkID {
 			continue
@@ -229,6 +283,34 @@ func executeGate(root string, options gateOptions) (gateResult, error) {
 	}
 	result.FinishedAt = time.Now().UTC()
 	return result, nil
+}
+
+func currentPlatform() platformIdentity {
+	return platformIdentity{OS: runtime.GOOS, Arch: runtime.GOARCH, Runner: os.Getenv("LEADFOX_RUNNER")}
+}
+
+func repeatGate(root string, options gateOptions) repeatGateResult {
+	report := repeatGateResult{SchemaVersion: 1, Leadfox: leadfoxVersion(), Gate: options.gateName, Repeat: options.repeat, Status: "passed"}
+	for index := 0; index < options.repeat; index++ {
+		runOptions := options
+		runOptions.repeat = 1
+		result, err := executeGate(root, runOptions)
+		if err != nil {
+			report.Status = "failed"
+			report.Runs = append(report.Runs, gateResult{Gate: options.gateName, Worktree: root, StartedAt: time.Now().UTC(), FinishedAt: time.Now().UTC(), Status: "failed", Platform: currentPlatform(), Applicable: true, Applicability: "applicable", Checks: []checkResult{{ID: "gate-runner", Status: "failed", ExitCode: 1, Reason: err.Error()}}})
+			report.Failed++
+			continue
+		}
+		report.Runs = append(report.Runs, result)
+		if result.Status == "passed" || result.Status == "manual" {
+			report.Passed++
+		} else {
+			report.Failed++
+			report.Status = "failed"
+		}
+	}
+	report.Flaky = report.Passed > 0 && report.Failed > 0
+	return report
 }
 
 func findGate(gates []gate, id string) (gate, bool) {
@@ -317,6 +399,13 @@ func renderGateMarkdown(result gateResult) string {
 	fmt.Fprintf(&builder, "- Worktree: `%s`\n", result.Worktree)
 	fmt.Fprintf(&builder, "- Started: %s\n", result.StartedAt.Format(time.RFC3339))
 	fmt.Fprintf(&builder, "- Finished: %s\n\n", result.FinishedAt.Format(time.RFC3339))
+	fmt.Fprintf(&builder, "- Platform: `%s/%s`", result.Platform.OS, result.Platform.Arch)
+	if result.Platform.Runner != "" {
+		fmt.Fprintf(&builder, " (`%s`)", result.Platform.Runner)
+	}
+	builder.WriteString("\n- Applicability: **")
+	builder.WriteString(result.Applicability)
+	builder.WriteString("**\n\n")
 	builder.WriteString("## Checks\n\n")
 	builder.WriteString("| Check | Status | Exit | Duration | Reason |\n|---|---|---:|---:|---|\n")
 	for _, item := range result.Checks {
@@ -327,6 +416,17 @@ func renderGateMarkdown(result gateResult) string {
 			continue
 		}
 		fmt.Fprintf(&builder, "\n### %s output\n\n```text\n%s\n```\n", item.ID, strings.TrimSpace(item.Output))
+	}
+	return builder.String()
+}
+
+func renderRepeatGateMarkdown(report repeatGateResult) string {
+	var builder strings.Builder
+	fmt.Fprintf(&builder, "# Repeated gate: %s\n\n", report.Gate)
+	fmt.Fprintf(&builder, "- Status: **%s**\n- Runs: %d\n- Passed: %d\n- Failed: %d\n- Flaky: **%t**\n\n", strings.ToUpper(report.Status), report.Repeat, report.Passed, report.Failed, report.Flaky)
+	builder.WriteString("| Run | Status | Platform | Started | Finished |\n|---:|---|---|---|---|\n")
+	for index, run := range report.Runs {
+		fmt.Fprintf(&builder, "| %d | %s | `%s/%s` | %s | %s |\n", index+1, run.Status, run.Platform.OS, run.Platform.Arch, run.StartedAt.Format(time.RFC3339), run.FinishedAt.Format(time.RFC3339))
 	}
 	return builder.String()
 }

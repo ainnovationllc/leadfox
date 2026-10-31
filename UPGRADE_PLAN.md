@@ -42,9 +42,21 @@ is retained without satisfying a criterion.
 
 ## Phase 4 — distribution and execution
 
-- Publish versioned Leadfox binaries or a reusable runner.
+- Publish reproducible versioned binaries or a reusable runner.
 - Add platform identity and applicability to gate evidence.
 - Add repeat-run support for soak and flake detection.
+
+Implemented in the current lifecycle upgrade:
+
+- `make build` embeds a version and `make dist` builds Darwin and Linux
+  binaries for arm64 and amd64.
+- `leadfox version --json` reports the version, source commit, Go version and
+  target platform.
+- Gate results and evidence identify operating system, architecture, optional
+  runner identity, and applicability.
+- `leadfox gate run GATE --repeat N` produces an aggregate report with each
+  run, pass/fail counts, and a `flaky` indicator. A nonzero result is returned
+  if any repetition fails.
 
 ## Explicit boundary
 
