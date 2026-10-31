@@ -17,6 +17,7 @@ Commands:
   plan              Create an architecture plan from requirements
   gate run <name>   Execute a project gate and report evidence
   job <operation>   Manage a bounded agent job lifecycle
+  assurance report  Report declared assurance evidence coverage
   version [--json]  Show the Leadfox version and build information
   help              Show this help message
 
@@ -100,6 +101,11 @@ func main() {
 		}
 	case "job":
 		if err := runJobCommand(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(1)
+		}
+	case "assurance":
+		if err := runAssuranceCommand(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "Error:", err)
 			os.Exit(1)
 		}
@@ -286,6 +292,11 @@ pins: []
 `,
 		"control/gates.yaml": `# Checks required at each stage of the project lifecycle.
 gates: []
+`,
+		"control/assurance.yaml": `# Project assurance coverage. This maps framework controls to evidence.
+# Evidence coverage is an audit aid; it is not a compliance certification.
+frameworks: []
+controls: []
 `,
 		"control/settings/README.md": `# Settings
 

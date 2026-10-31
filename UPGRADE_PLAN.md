@@ -58,6 +58,20 @@ Implemented in the current lifecycle upgrade:
   run, pass/fail counts, and a `flaky` indicator. A nonzero result is returned
   if any repetition fails.
 
+## Phase 5 — assurance evidence (implemented)
+
+- Add a project-controlled `control/assurance.yaml` model for frameworks,
+  controls, owners and evidence references.
+- Add `leadfox assurance report` in Markdown or JSON form.
+- Check local evidence existence and optional SHA-256 integrity, while clearly
+  distinguishing missing, present, verified, mismatched and external evidence.
+- State explicitly that Leadfox reports evidence coverage and traceability; it
+  does not certify SOC 2 or replace an independent auditor.
+
+The model is framework-neutral. SOC 2 mappings may be declared by a consuming
+project, but SOC 2 control language and compliance decisions are not embedded
+in Leadfox.
+
 ## Explicit boundary
 
 Leadfox must not absorb project-specific assumptions such as Canvas, a
