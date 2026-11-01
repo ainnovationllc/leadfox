@@ -87,6 +87,62 @@ job worktrees and from the development checkout:
   operations worktree, with its hash preserved, and keeping that worktree
   permanently.
 
+## 3. Security-sensitive jobs prove both denial and success from a verified clean state
+
+**Problem.** Privilege and access-control work is easy to "prove" wrongly:
+- A list of forbidden actions that all fail looks like evidence. But if the
+  login or setup step failed first, every negative check fails trivially,
+  and the run reports success.
+- A mutation (a deliberately weakened privilege) that "is caught" proves
+  nothing if the baseline was already broken, or if the mutation hit a
+  comment instead of the statement.
+
+**Observed:** in one design check, a failed setup made nine "denied"
+results and six "caught" mutations meaningless. Only added preconditions
+exposed it.
+
+**Generalization.** For any job whose purpose is to restrict or grant
+access (database roles, IAM, network policy, secrets, permissions), the
+evidence must show **both directions**, each from a **verified clean
+state**.
+
+**Proposed capability:** a packet section, *security evidence*, which
+Leadfox validates and the review reproduces:
+1. **Positive controls first.** The intended identity can authenticate, and
+   its intended actions succeed (for example the real application
+   migrations and data operations), in an isolated, disposable
+   environment.
+2. **Forbidden actions,** listed explicitly. Each must fail, and each check
+   runs only after its positive control passed. A failed positive control
+   marks every dependent negative result as invalid, not as passed.
+3. **Weakened-privilege mutations,** listed explicitly. Each must make the
+   verification fail. Each starts from a baseline that verification has
+   confirmed clean, and is restored and re-verified afterwards. A dirty
+   baseline marks the mutation result invalid.
+4. **Mutations target real statements:** assignments or grants, not
+   comments or documentation. The harness should match statements, not
+   free text.
+5. **Reproduced by review:** the reviewer reruns the security evidence on
+   the reviewed commit and records the transcript (identities, booleans,
+   denials; never secrets). Agent-reported results alone do not satisfy
+   it.
+6. **Later decisions** that only the real environment can settle (for
+   example the provider's actual role attributes, or API behaviour) are
+   listed explicitly. They stay open until checked there, with a stop on
+   any difference.
+
+**Observed (continued):** a least-privilege database design for a managed
+PostgreSQL service. A throwaway container with the real migrations showed
+that:
+- the application's migrations and data operations succeed;
+- nine forbidden actions fail after a positive login control;
+- each weakened privilege is caught from a clean baseline.
+
+The same check found three design facts that a stub could not:
+- role attributes are not inherited without `SET ROLE`;
+- a setup role lacks ADMIN OPTION on provider-created users;
+- `ALTER ROLE … NOSUPERUSER` requires superuser.
+
 ## Related items already recorded by projects
 
 - Retained job artifacts copied out of disposable worktrees before merge
