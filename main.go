@@ -14,11 +14,18 @@ Usage:
 
 Commands:
   init <name>       Create a new Leadfox project
+  intake <op>       Validate a project intake
+  change <op>       Validate a proposed project change
   plan              Create an architecture plan from requirements
   gate run <name>   Execute a project gate and report evidence
   job <operation>   Manage a bounded agent job lifecycle
+  capability <op>   Inspect agent capabilities available to job hosts
+  policy <op>       Validate or inspect the project decision policy
+  risk <op>         Validate or inspect project-defined risk controls
+  skill <op>        Install or verify Leadfox-provided skills
   assurance report  Report declared assurance evidence coverage
   security scan     Run the configured secret scanner
+  uninstall         Remove the verified user-local Leadfox installation
   version [--json]  Show the Leadfox version and build information
   help              Show this help message
 
@@ -90,6 +97,22 @@ func main() {
 			fmt.Fprintln(os.Stderr, "Error:", err)
 			os.Exit(1)
 		}
+	case "intake":
+		if err := runIntakeCommand(os.Args[2:]); err != nil {
+			if errors.Is(err, errIntakeInvalid) {
+				os.Exit(1)
+			}
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(1)
+		}
+	case "change":
+		if err := runChangeCommand(os.Args[2:]); err != nil {
+			if errors.Is(err, errChangeInvalid) {
+				os.Exit(1)
+			}
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(2)
+		}
 	case "plan":
 		if err := runPlan(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "Error:", err)
@@ -105,6 +128,26 @@ func main() {
 			fmt.Fprintln(os.Stderr, "Error:", err)
 			os.Exit(1)
 		}
+	case "capability":
+		if err := runCapabilityCommand(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(1)
+		}
+	case "policy":
+		if err := runPolicyCommand(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(1)
+		}
+	case "risk":
+		if err := runRiskCommand(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(1)
+		}
+	case "skill":
+		if err := runSkillCommand(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(1)
+		}
 	case "assurance":
 		if err := runAssuranceCommand(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "Error:", err)
@@ -112,6 +155,11 @@ func main() {
 		}
 	case "security":
 		if err := runSecurityCommand(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(1)
+		}
+	case "uninstall":
+		if err := runUninstallCommand(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "Error:", err)
 			os.Exit(1)
 		}
@@ -164,6 +212,7 @@ func runInit(args []string) error {
 		"control/requirements",
 		"control/jobs",
 		"control/handoffs",
+		"skills/leadfox-control-plan-review",
 		"services",
 		"tests",
 		"infrastructure/terraform",
@@ -253,6 +302,9 @@ This is a Leadfox-managed project.
 ## Repository structure
 
 - control/: project metadata, pins, gates, and environment settings
+- control/project-intake.md: developer or project-manager planning intake
+- control/skills.yaml: project-pinned and optional host skills
+- skills/: project-local Control skills
 - control/requirements/: confirmed functional requirements
 - services/: application services
 - tests/: unit, integration, and end-to-end tests
@@ -261,12 +313,30 @@ This is a Leadfox-managed project.
 - docs/: evolving architecture and process documentation
 
 Read the relevant control files and documentation before making changes.
-For the planning workflow, read docs/agent-planning.md. For role boundaries,
+Agent capabilities are declared in control/agent-capabilities.yaml. A job may
+require a capability such as an MCP design server, but Leadfox never stores
+the provider credentials or grants access outside the agent host.
+
+## Control decision policy
+
+Read control/decision-policy.yaml before taking project actions. Control may
+act automatically only for actions listed under automatic. Actions under
+control_with_record require a recorded rationale. Actions under
+developer_approval require explicit developer approval before execution.
+Escalation triggers always require developer review. Do not repeatedly ask
+about a decision already covered by the policy; escalate only when the action
+falls outside it or a trigger applies.
+For the planning workflow, read control/project-intake.md and
+docs/agent-planning.md. The project-local Control plan-review skill is in
+skills/leadfox-control-plan-review/SKILL.md. For role boundaries,
 job packets, and handoffs, read docs/agent-roles.md.
 When the project has no confirmed requirements, ask the developer whether to
 begin the agent-led planning process. Do not assume the developer knows the
 planning prompt.
 Gather requirements and propose an architecture before implementing services.
+Use the optional global leadfox-project-planning skill when available. Skills
+guide agents but do not replace deterministic Leadfox validation or developer
+approval.
 After requirements are confirmed, run leadfox plan from the project root and
 review its proposed architecture plan with the developer.
 Use leadfox gate run <gate-name> to execute trusted project gates and attach
@@ -292,9 +362,159 @@ environments:
 entry_points: []
 data_stores: []
 `, projectName),
+		"control/project-intake.md": fmt.Sprintf(`# Project intake: %s
+
+Document version: 1
+Current stage: idea
+Last updated: <!-- YYYY-MM-DD -->
+Change summary: Initial project intake
+
+## Identity
+
+- Project name: %s
+- Project owner: <!-- required -->
+- Intake author: <!-- required -->
+
+## Problem and outcome
+
+- Problem being solved: <!-- required -->
+- Desired outcome: <!-- required -->
+- How we will know the first version is useful: <!-- required -->
+- Explicit non-goals for the first version: <!-- optional -->
+
+## Users and primary flow
+
+- Primary users: <!-- required -->
+- Other actors or administrators: <!-- optional -->
+- Main user flow:
+  1. <!-- required -->
+  2. <!-- required -->
+  3. <!-- required -->
+- Most important failure or rejection cases: <!-- optional -->
+
+## First-version capabilities
+
+1. <!-- required -->
+2. <!-- required -->
+3. <!-- required -->
+
+## Services and components
+
+| Component or service | Purpose | Existing or new | Owner | Unknowns |
+|---|---|---|---|---|
+| <!-- required --> | <!-- required --> | <!-- existing/new --> | <!-- required --> | <!-- unknowns --> |
+
+## Integrations and external dependencies
+
+| Integration | Why it is needed | Direction | Environment needed | Owner | Known constraints |
+|---|---|---|---|---|---|
+| <!-- required; write none if none --> | <!-- required --> | <!-- inbound/outbound/both --> | <!-- local/test/staging/prod --> | <!-- required --> | <!-- unknowns --> |
+
+## Data
+
+- Data the system receives: <!-- required -->
+- Data the system creates or stores: <!-- required -->
+- Sensitive data involved: <!-- required; never enter values -->
+- Data that must not be retained: <!-- optional -->
+- Retention or deletion expectations: <!-- optional -->
+
+## Environments
+
+| Environment | Purpose | Must exist now? | External access | Data/secrets allowed | Destruction expectation |
+|---|---|---|---|---|---|
+| local | <!-- required --> | <!-- yes/no --> | <!-- none/mock/limited --> | <!-- placeholders/test data --> | <!-- disposable/retained --> |
+| experiment or staging | <!-- optional --> | <!-- yes/no --> | <!-- description --> | <!-- description --> | <!-- description --> |
+| production | <!-- optional --> | <!-- yes/no --> | <!-- description --> | <!-- description --> | <!-- description --> |
+
+## Security and operational concerns
+
+- What must be protected: <!-- required -->
+- Who should be allowed to do what: <!-- optional -->
+- Secrets or credentials required: <!-- names/types only -->
+- Important abuse or failure concerns: <!-- required -->
+- Availability, performance, or cost concerns: <!-- optional -->
+- Regulatory or contractual constraints: <!-- optional; do not claim compliance -->
+
+## First planning questions
+
+- Decisions the owner already made: <!-- optional -->
+- Decisions Control should analyze: <!-- optional -->
+- Questions that must be answered before implementation: <!-- required -->
+- Preferred first job or milestone: <!-- optional -->
+
+## Intake notes
+
+- Assumptions explicitly allowed for initial planning: <!-- optional -->
+- Information intentionally deferred: <!-- optional -->
+- Optional skills that may help: <!-- suggestions only -->
+- Additional references: <!-- optional -->
+
+## Change history
+
+| Version | Date | Author | Change | Reason or source |
+|---|---|---|---|---|
+| 1 | <!-- date --> | <!-- author --> | Initial intake | Leadfox initialization |
+`, projectName, projectName),
+		"control/skills.yaml": fmt.Sprintf(`version: 1
+skills:
+  - id: leadfox-control-plan-review
+    version: "1"
+    source: leadfox-distribution
+    scope: project
+    required_for: control
+    path: skills/leadfox-control-plan-review/SKILL.md
+    sha256: %s
+  - id: leadfox-project-planning
+    scope: global
+    required_for: planning
+    adoption: optional
+    note: Install globally with leadfox skill install; project initialization does not overwrite host skills.
+`, controlPlanReviewSkillSHA256()),
+		"skills/leadfox-control-plan-review/SKILL.md": string(controlPlanReviewSkill),
 		"control/pins.yaml": `# Exact artifact and definition versions used by a candidate.
 # Service-owned dependency locks remain with their service.
 pins: []
+`,
+		"control/agent-capabilities.yaml": `# Provider-neutral capabilities available to agent hosts.
+# Leadfox records requirements; it does not connect to providers or store credentials.
+# Add a capability here, then reference its ID from a job with --capability.
+capabilities: []
+`,
+		"control/decision-policy.yaml": `# Project-owned authority policy for the Control Agent.
+# Action names are project-defined. Credentials, tokens and approvals do not belong here.
+version: 1
+decision_policy:
+  automatic:
+    - local_tests
+    - formatting
+    - worktree_cleanup
+    - job_sequencing
+    - documentation_updates
+  control_with_record:
+    - ephemeral_configuration
+    - agent_assignment
+    - model_selection
+    - nonproduction_defaults
+  developer_approval:
+    - external_network_access
+    - tool_installation
+    - cloud_resources
+    - iam_changes
+    - secrets
+    - remote_push
+    - production_changes
+  escalation_triggers:
+    - public_exposure
+    - cost_change
+    - destructive_action
+    - security_exception
+    - compliance_claim
+    - uncertain_requirement
+`,
+		"control/risk-controls.yaml": `# Project-owned risk controls for bounded jobs.
+# Leadfox validates job references; the project defines evidence and stop conditions.
+version: 1
+risk_controls: []
 `,
 		"control/gates.yaml": `# Checks required at each stage of the project lifecycle.
 gates: []
@@ -374,7 +594,8 @@ Store approved job packets here. A job packet bounds delegated work; it does
 not grant merge or deployment approval.
 
 Each job should identify its role, requirement IDs, allowed paths, inputs,
-expected outputs, checks, gates, stop conditions, and handoff format.
+expected outputs, checks, gates, stop conditions, handoff format, and any
+required agent capability IDs.
 `,
 		"control/handoffs/README.md": `# Agent handoffs
 
@@ -408,6 +629,21 @@ interactions; they do not replace service implementations.
 
 Record approved architecture and evolving development, environment, gate, and
 release processes here.
+`,
+		"docs/decision-policy.md": `# Control decision policy
+
+The project-owned authority policy is in control/decision-policy.yaml. It
+reduces approval fatigue by allowing Control to act within declared boundaries.
+
+- automatic: Control may act without asking, then report normally;
+- control_with_record: Control may decide, but records the action and rationale;
+- developer_approval: Control must obtain explicit approval before execution;
+- escalation_triggers: Control always pauses for developer review.
+
+The policy does not grant permission to store credentials, access external
+systems, make production changes, or claim compliance. When an action matches
+an escalation trigger or falls outside the policy, Control must stop and ask.
+Recorded defaults should not be asked again unless the project policy changes.
 `,
 		"docs/agent-roles.md": `# Agent roles and handoffs
 
@@ -464,6 +700,7 @@ Every delegated job should state:
 - assigned role and responsible paths;
 - allowed files or directories and explicitly excluded areas;
 - input artifacts, pins, and settings references;
+- required agent capability IDs and the fallback if a capability is unavailable;
 - expected outputs and acceptance checks;
 - required gate(s), stop conditions, and unresolved questions;
 - handoff format and the agent's final status.
@@ -483,23 +720,26 @@ parallelization possible.
 `,
 		"docs/agent-planning.md": `# Agent planning workflow
 
-1. Read AGENTS.md and the current control files.
+1. Read AGENTS.md, control/project-intake.md, and the current control files.
 2. Determine the current project state.
-3. If no confirmed requirements exist, ask the developer whether to begin the
+3. If the intake is incomplete, use the optional leadfox-project-planning skill
+   to guide the developer or planning agent through the missing fields.
+4. Run leadfox intake validate and correct its structural findings.
+5. If no confirmed requirements exist, ask the developer whether to begin the
    agent-led planning process.
-4. If the developer agrees, gather and summarize the requirements.
-5. Confirm the requirements with the developer.
-6. Record confirmed requirements under control/requirements/.
-7. Run leadfox plan from the project root.
-8. Review the generated architecture plan with the developer.
-9. Before implementation, reconcile the approved model:
+6. If the developer agrees, gather and summarize the requirements.
+7. Confirm the requirements with the developer.
+8. Record confirmed requirements under control/requirements/.
+9. Run leadfox plan from the project root.
+10. Review the generated architecture plan with the developer.
+11. Before implementation, reconcile the approved model:
    - resolve service-name mismatches;
    - mark the architecture plan approved;
    - add the initial contracts;
    - define the first gates;
    - confirm non-secret settings and secret references;
    - show the proposed change summary.
-10. Do not implement services or provision infrastructure until the plan and
+12. Do not implement services or provision infrastructure until the plan and
     reconciliation changes are explicitly approved.
 11. Read docs/agent-roles.md and divide the approved build plan into bounded
     job packets. Start with the smallest independently reviewable step.

@@ -1,0 +1,23 @@
+{
+  "name": "leadfox",
+  "version": "0.1.0",
+  "description": "Bootstrap installer for the Leadfox CLI",
+  "private": false,
+  "bin": {
+    "leadfox": "npm/leadfox.js"
+  },
+  "files": [
+    "npm/leadfox.js",
+    "npm/install.js",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test npm/*.test.js"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
