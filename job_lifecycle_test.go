@@ -43,6 +43,19 @@ func TestJobOptionsRejectUnsupportedFlags(t *testing.T) {
 	}
 }
 
+func TestJobRiskOptionIsBoundToJobCreation(t *testing.T) {
+	options, id, err := parseJobOptions([]string{"JOB-001", "--risk", "security-sensitive"})
+	if err != nil || id != "JOB-001" || len(options.risks) != 1 || options.risks[0] != "security-sensitive" {
+		t.Fatalf("risk option parsed incorrectly: id=%q options=%+v err=%v", id, options, err)
+	}
+	if err := validateJobOptions("new", options); err != nil {
+		t.Fatalf("risk option rejected for job new: %v", err)
+	}
+	if err := validateJobOptions("start", options); err == nil || !strings.Contains(err.Error(), "job start does not accept --risk") {
+		t.Fatalf("risk option was not rejected for job start: %v", err)
+	}
+}
+
 func TestAcceptanceCriteriaRequireEvidence(t *testing.T) {
 	packet := jobPacket{AcceptanceCriteria: []jobCriterion{
 		{ID: "A1", Statement: "the checks pass", Status: "pending"},

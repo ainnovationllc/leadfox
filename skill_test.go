@@ -29,7 +29,7 @@ func TestPlanningSkillInstallVerifyAndRemove(t *testing.T) {
 			t.Fatalf("expected installed skill %s: %v", file, err)
 		}
 	}
-	if err := os.WriteFile(hostCopy, []byte(strings.Replace(string(planningSkill), "# Leadfox Project Planner", "# Modified", 1)), 0o644); err != nil {
+	if err := os.WriteFile(hostCopy, []byte(strings.Replace(string(planningSkill), "# Leadfox Project Planning", "# Modified", 1)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := verifyPlanningSkill(options); err == nil {
@@ -46,6 +46,19 @@ func TestPlanningSkillInstallVerifyAndRemove(t *testing.T) {
 	}
 	if _, err := os.Stat(canonical); !os.IsNotExist(err) {
 		t.Fatalf("canonical skill still exists: %v", err)
+	}
+}
+
+func TestPlanningSkillTargetsIntakeAsFirstOutput(t *testing.T) {
+	text := string(planningSkill)
+	if !strings.Contains(text, "control/project-intake.md") {
+		t.Fatal("planning skill must target control/project-intake.md")
+	}
+	if !strings.Contains(text, "leadfox intake validate control/project-intake.md") {
+		t.Fatal("planning skill must require intake validation")
+	}
+	if strings.Contains(text, "produce one canonical human-readable plan document:\n`control/architecture-plan.md`") {
+		t.Fatal("planning skill must not make architecture-plan.md the first output")
 	}
 }
 

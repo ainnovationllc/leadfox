@@ -28,7 +28,8 @@ function normalizeBaseURL(value) {
 
 function releaseURL(baseURL, version, file) {
   const base = normalizeBaseURL(baseURL);
-  const tag = version === 'latest' ? 'latest' : `v${version.replace(/^v/, '')}`;
+  if (version === 'latest') return `${base}/latest/download/${file}`;
+  const tag = `v${version.replace(/^v/, '')}`;
   return `${base}/download/${encodeURIComponent(tag)}/${file}`;
 }
 
@@ -201,22 +202,37 @@ async function install(options = {}) {
       throw error;
     });
     const active = await activate(root, target, Boolean(options.replaceActive));
-    const binaryHash = await sha256File(target);
-    const next = {
-      name: 'leadfox',
-      version: release.manifest.version,
-      platform,
-      artifact: release.artifact.file,
-      archive_sha256: archiveHash,
-      binary_sha256: binaryHash,
-      source: release.artifactURL,
-      active_binary: path.relative(root, active),
-      active_target: path.relative(root, target),
-      installed_at: new Date().toISOString(),
-    };
-    if (current && current.version !== next.version) next.previous = current;
-    await atomicJSON(path.join(root, 'manifest.json'), next, 0o600);
-    return { installed: true, version: next.version, platform: platform.key, binary: active, archive_sha256: archiveHash, binary_sha256: binaryHash };
+    try {
+      const binaryHash = await sha256File(target);
+      const next = {
+        name: 'leadfox',
+        version: release.manifest.version,
+        platform,
+        artifact: release.artifact.file,
+        archive_sha256: archiveHash,
+        binary_sha256: binaryHash,
+        source: release.artifactURL,
+        active_binary: path.relative(root, active),
+        active_target: path.relative(root, target),
+        installed_at: new Date().toISOString(),
+      };
+      if (current && current.version !== next.version) next.previous = current;
+      await atomicJSON(path.join(root, 'manifest.json'), next, 0o600);
+      return { installed: true, version: next.version, platform: platform.key, binary: active, archive_sha256: archiveHash, binary_sha256: binaryHash };
+    } catch (error) {
+      // Activation is provisional until the verified manifest is written.
+      // Restore the previous active target so an interrupted update cannot
+      // leave a new binary active without a matching manifest.
+      if (current && current.active_target) {
+        const previousTarget = path.join(root, current.active_target);
+        await activate(root, previousTarget, true);
+        await atomicJSON(path.join(root, 'manifest.json'), current, 0o600);
+      } else {
+        await fs.unlink(active).catch(() => {});
+        await fs.unlink(path.join(root, 'manifest.json')).catch(() => {});
+      }
+      throw error;
+    }
   } finally {
     await fs.rm(tempRoot, { recursive: true, force: true });
   }

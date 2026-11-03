@@ -77,7 +77,7 @@ test('installs a verified local release through the same download path', async (
   let manifest = manifest1;
   const server = http.createServer(async (request, response) => {
     const files = {
-      '/releases/download/latest/release-manifest.json': () => Buffer.from(manifest),
+      '/releases/latest/download/release-manifest.json': () => Buffer.from(manifest),
       '/releases/download/v0.1.0/release-manifest.json': () => Buffer.from(manifest1),
       '/releases/download/v0.2.0/release-manifest.json': () => Buffer.from(manifest2),
       '/releases/download/v0.1.0/leadfox_0.1.0_linux_amd64.tar.gz': archiveBytes,

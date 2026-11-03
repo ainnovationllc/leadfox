@@ -40,6 +40,7 @@ type JobPacket struct {
 	InputArtifacts  []string
 	Pins            []string
 	Settings        []string
+	Capabilities    []string
 	ExpectedOutputs []string
 	RequiredGates   []string
 	StopConditions  []string

@@ -37,6 +37,10 @@ Usage:
   leadfox job resume <id> [--reason TEXT]
   leadfox job list
   leadfox job merge <id>
+  leadfox job retain <id> --artifact-id ID --actor NAME
+  leadfox job readiness <id> [--format json]
+  leadfox job context <id> [--format json]
+  leadfox job validate <id> [--format json]
 
 Options:
   -b, --base BRANCH       Base branch (default: main)
@@ -49,6 +53,8 @@ Options:
       --exclude GLOB      Excluded path (repeatable)
       --gate ID           Required gate (repeatable)
       --setup COMMAND     Review setup command (repeatable)
+      --capability ID      Agent capability required by this job (repeatable)
+      --risk ID            Project risk control required by this job (repeatable)
       --verdict VALUE     accepted or changes-requested
       --approved-by NAME  Explicit approver identity
       --actor NAME       Identity performing a lifecycle transition
@@ -61,6 +67,7 @@ Options:
       --conclusion VALUE  success, failure, cancelled, or timed_out
       --evidence-url URL  Link to the external run or evidence
       --artifact REF      Artifact reference (repeatable)
+      --artifact-id ID    Declared durable artifact to retain
       --diagnostic        Record evidence without satisfying the criterion
   -h, --help              Show this help message
 
@@ -92,6 +99,8 @@ type jobPacket struct {
 	GateEvidence       []jobGateEvidence     `yaml:"gate_evidence,omitempty"`
 	ReviewRounds       []jobReviewRound      `yaml:"review_rounds,omitempty"`
 	ReviewSetup        []string              `yaml:"review_setup,omitempty"`
+	Capabilities       []string              `yaml:"capabilities,omitempty"`
+	RiskControls       []string              `yaml:"risk_controls,omitempty"`
 	AcceptanceCriteria []jobCriterion        `yaml:"acceptance_criteria,omitempty"`
 	ExternalEvidence   []jobExternalEvidence `yaml:"external_evidence,omitempty"`
 	Attestations       []jobAttestation      `yaml:"attestations,omitempty"`
@@ -99,6 +108,8 @@ type jobPacket struct {
 	Transitions        []jobTransition       `yaml:"transitions,omitempty"`
 	Syncs              []jobSyncRecord       `yaml:"syncs,omitempty"`
 	RemovedWorktrees   []jobWorktreeRecord   `yaml:"removed_worktrees,omitempty"`
+	DurableArtifacts   []jobDurableArtifact  `yaml:"durable_artifacts,omitempty"`
+	AuditRecords       []jobAuditRecord      `yaml:"audit_records,omitempty"`
 	ApprovedBy         string                `yaml:"approved_by,omitempty"`
 	ApprovedAt         string                `yaml:"approved_at,omitempty"`
 	MergeCommit        string                `yaml:"merge_commit,omitempty"`
@@ -187,6 +198,26 @@ type jobWorktreeRecord struct {
 	RemovedAt string `yaml:"removed_at"`
 }
 
+type jobDurableArtifact struct {
+	ID             string `yaml:"id"`
+	Source         string `yaml:"source"`
+	Destination    string `yaml:"destination"`
+	SHA256         string `yaml:"sha256"`
+	Required       bool   `yaml:"required,omitempty"`
+	Retained       bool   `yaml:"retained,omitempty"`
+	RetainedSHA256 string `yaml:"retained_sha256,omitempty"`
+	RetainedBy     string `yaml:"retained_by,omitempty"`
+	RetainedAt     string `yaml:"retained_at,omitempty"`
+}
+
+type jobAuditRecord struct {
+	Event      string `yaml:"event"`
+	Actor      string `yaml:"actor"`
+	RecordedAt string `yaml:"recorded_at"`
+	Commit     string `yaml:"commit,omitempty"`
+	Details    string `yaml:"details,omitempty"`
+}
+
 type jobReviewRound struct {
 	Number     int               `yaml:"number"`
 	Commit     string            `yaml:"commit"`
@@ -240,10 +271,11 @@ type jobOptions struct {
 	base, worktree, branch, commit, role, objective, verdict string
 	approvedBy, actor, reason, note, result, check           string
 	criterion, provider, runID, conclusion, evidenceURL      string
+	artifactID                                               string
 	attempt                                                  int
 	diagnostic                                               bool
 	artifacts                                                []string
-	allow, exclude, gates, setup                             []string
+	allow, exclude, gates, setup, capabilities, risks        []string
 	showHelp                                                 bool
 	used                                                     map[string]bool
 }
@@ -254,6 +286,9 @@ func runJobCommand(args []string) error {
 		return nil
 	}
 	operation := args[0]
+	if operation == "readiness" || operation == "context" || operation == "validate" {
+		return runJobInspection(operation, args[1:])
+	}
 	if operation == "reissue" {
 		if len(args) < 3 {
 			return errors.New("job reissue requires OLD-ID and NEW-ID")
@@ -325,6 +360,8 @@ func runJobCommand(args []string) error {
 		return jobList(root)
 	case "merge":
 		return jobMerge(root, id)
+	case "retain":
+		return jobRetain(root, id, options)
 	default:
 		return fmt.Errorf("unknown job operation %q; use 'leadfox job --help' for usage", operation)
 	}
@@ -512,6 +549,13 @@ func parseJobOptions(args []string) (jobOptions, string, error) {
 				return o, id, e
 			}
 			o.artifacts, i = append(o.artifacts, v), n
+		case "--artifact-id":
+			o.used["artifact-id"] = true
+			v, n, e := requiredOptionValue(args, i, arg)
+			if e != nil {
+				return o, id, e
+			}
+			o.artifactID, i = v, n
 		case "--diagnostic":
 			o.used["diagnostic"] = true
 			o.diagnostic = true
@@ -547,6 +591,22 @@ func parseJobOptions(args []string) (jobOptions, string, error) {
 			}
 			o.setup = append(o.setup, v)
 			i = n
+		case "--capability":
+			o.used["capability"] = true
+			v, n, e := requiredOptionValue(args, i, arg)
+			if e != nil {
+				return o, id, e
+			}
+			o.capabilities = append(o.capabilities, v)
+			i = n
+		case "--risk":
+			o.used["risk"] = true
+			v, n, e := requiredOptionValue(args, i, arg)
+			if e != nil {
+				return o, id, e
+			}
+			o.risks = append(o.risks, v)
+			i = n
 		default:
 			if strings.HasPrefix(arg, "-") {
 				return o, id, fmt.Errorf("unknown job option %q", arg)
@@ -562,20 +622,24 @@ func parseJobOptions(args []string) (jobOptions, string, error) {
 
 func validateJobOptions(operation string, o jobOptions) error {
 	allowed := map[string]map[string]bool{
-		"new":      {"base": true, "worktree": true, "branch": true, "role": true, "objective": true, "allow": true, "exclude": true, "gate": true, "setup": true},
-		"start":    {"base": true, "worktree": true, "branch": true},
-		"scope":    {"worktree": true, "commit": true},
-		"sync":     {"actor": true, "reason": true},
-		"review":   {"worktree": true, "commit": true, "reason": true},
-		"approve":  {"verdict": true, "approved-by": true, "note": true},
-		"attest":   {"check": true, "result": true, "approved-by": true, "note": true},
-		"evidence": {"criterion": true, "provider": true, "run-id": true, "attempt": true, "commit": true, "conclusion": true, "evidence-url": true, "artifact": true, "diagnostic": true, "actor": true},
-		"cancel":   {"reason": true, "actor": true, "approved-by": true},
-		"block":    {"reason": true, "actor": true, "approved-by": true},
-		"resume":   {"reason": true, "actor": true},
-		"reissue":  {"reason": true, "actor": true},
-		"list":     {},
-		"merge":    {},
+		"new":       {"base": true, "worktree": true, "branch": true, "role": true, "objective": true, "allow": true, "exclude": true, "gate": true, "setup": true, "capability": true, "risk": true},
+		"start":     {"base": true, "worktree": true, "branch": true},
+		"scope":     {"worktree": true, "commit": true},
+		"sync":      {"actor": true, "reason": true},
+		"review":    {"worktree": true, "commit": true, "reason": true},
+		"approve":   {"verdict": true, "approved-by": true, "note": true},
+		"attest":    {"check": true, "result": true, "approved-by": true, "note": true},
+		"evidence":  {"criterion": true, "provider": true, "run-id": true, "attempt": true, "commit": true, "conclusion": true, "evidence-url": true, "artifact": true, "diagnostic": true, "actor": true},
+		"cancel":    {"reason": true, "actor": true, "approved-by": true},
+		"block":     {"reason": true, "actor": true, "approved-by": true},
+		"resume":    {"reason": true, "actor": true},
+		"reissue":   {"reason": true, "actor": true},
+		"list":      {},
+		"merge":     {},
+		"retain":    {"artifact-id": true, "actor": true},
+		"readiness": {},
+		"context":   {},
+		"validate":  {},
 	}
 	operationAllowed, found := allowed[operation]
 	if !found {
@@ -651,8 +715,14 @@ func jobNew(root, id string, o jobOptions) error {
 		o.objective = "Describe the bounded work for this job."
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	packet := jobPacket{ID: id, Status: "draft", Role: o.role, Objective: o.objective, BaseBranch: o.base, AllowedPaths: o.allow, ExcludedPaths: o.exclude, Gates: o.gates, ReviewSetup: o.setup, CreatedAt: now, UpdatedAt: now}
-	body := "# " + id + "\n\n## Objective\n\n" + o.objective + "\n\n## Agent instructions\n\nRead the approved project documentation before starting. Do not modify files outside the allowed paths. Return a handoff listing changed paths, checks run, results, assumptions, unresolved items, and the recommended next step.\n\n## Git provenance\n\n`base_commit` and `branch_start_commit` identify the commit from which the job branch was created. The shared lifecycle start record is committed immediately afterward and is reachable from the job branch; its SHA is intentionally not stored inside that same commit because a commit cannot contain its own ID.\n\n## Acceptance\n\nSet the packet status to ready after Control has completed the job design.\n"
+	if err := validateJobCapabilities(root, o.capabilities); err != nil {
+		return err
+	}
+	if err := validateJobRisks(root, o.risks); err != nil {
+		return err
+	}
+	packet := jobPacket{ID: id, Status: "draft", Role: o.role, Objective: o.objective, BaseBranch: o.base, AllowedPaths: o.allow, ExcludedPaths: o.exclude, Gates: o.gates, ReviewSetup: o.setup, Capabilities: o.capabilities, RiskControls: o.risks, CreatedAt: now, UpdatedAt: now}
+	body := "# " + id + "\n\n## Objective\n\n" + o.objective + "\n\n## Agent instructions\n\nRead the approved project documentation before starting. Do not modify files outside the allowed paths. Return a handoff listing changed paths, checks run, results, assumptions, unresolved items, and the recommended next step.\n\n## Agent capabilities\n\nIf capabilities are listed in the packet, the agent host must provide them before work begins. Leadfox records the requirement but does not connect to providers or supply credentials. If a required capability is unavailable, stop and report it.\n\n## Risk controls\n\nIf risk controls are listed in the packet, read each declared control in control/risk-controls.yaml before starting. Treat its required evidence and stop conditions as mandatory review inputs. Leadfox validates the references but does not interpret project-specific risk rules.\n\n## Durable artifacts\n\nIf durable artifacts are declared in this packet, copy and hash them outside the disposable worktree with `leadfox job retain` before merge. Cleanup refuses to proceed until every required artifact is retained.\n\n## Git provenance\n\n`base_commit` and `branch_start_commit` identify the commit from which the job branch was created. The shared lifecycle start record is committed immediately afterward and is reachable from the job branch; its SHA is intentionally not stored inside that same commit because a commit cannot contain its own ID.\n\n## Acceptance\n\nSet the packet status to ready after Control has completed the job design.\n"
 	if err := writeJob(root, packet, body); err != nil {
 		return err
 	}
@@ -663,6 +733,12 @@ func jobNew(root, id string, o jobOptions) error {
 func jobStart(root, id string, o jobOptions) error {
 	packet, body, err := readJob(root, id)
 	if err != nil {
+		return err
+	}
+	if err := validateJobCapabilities(root, packet.Capabilities); err != nil {
+		return err
+	}
+	if err := validateJobRisks(root, packet.RiskControls); err != nil {
 		return err
 	}
 	if packet.Status != "ready" {
@@ -1235,6 +1311,12 @@ func uniqueStrings(values []string) []string {
 func jobReview(root, id string, o jobOptions) error {
 	packet, body, err := readJob(root, id)
 	if err != nil {
+		return err
+	}
+	if err := validateJobCapabilities(root, packet.Capabilities); err != nil {
+		return err
+	}
+	if err := validateJobRisks(root, packet.RiskControls); err != nil {
 		return err
 	}
 	if packet.Status == "accepted" && o.reason == "" {
@@ -1879,6 +1961,9 @@ func jobTerminate(root, id, status string, o jobOptions) error {
 		if path == "" {
 			continue
 		}
+		if err := ensureCleanupPathAllowed(root, path); err != nil {
+			return err
+		}
 		if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
 			continue
 		}
@@ -1997,6 +2082,13 @@ func jobReissue(root, oldID, newID string, o jobOptions) error {
 	newPacket.Transitions = nil
 	newPacket.Syncs = nil
 	newPacket.RemovedWorktrees = nil
+	newPacket.AuditRecords = nil
+	for index := range newPacket.DurableArtifacts {
+		newPacket.DurableArtifacts[index].Retained = false
+		newPacket.DurableArtifacts[index].RetainedSHA256 = ""
+		newPacket.DurableArtifacts[index].RetainedBy = ""
+		newPacket.DurableArtifacts[index].RetainedAt = ""
+	}
 	newPacket.ApprovedBy = ""
 	newPacket.ApprovedAt = ""
 	newPacket.MergeCommit = ""
@@ -2038,8 +2130,16 @@ func jobMerge(root, id string) error {
 	if err := verifyGateEvidence(root, packet); err != nil {
 		return fmt.Errorf("refusing merge: %w", err)
 	}
+	if err := validateDurableArtifacts(packet); err != nil {
+		return fmt.Errorf("refusing merge: %w", err)
+	}
 	if err := gitCleanForLifecycle(root, id); err != nil {
 		return err
+	}
+	for _, path := range uniqueStrings(append([]string{packet.Worktree, packet.ReviewWorktree}, packet.ReviewWorktrees...)) {
+		if err := ensureCleanupPathAllowed(root, path); err != nil {
+			return fmt.Errorf("refusing merge: %w", err)
+		}
 	}
 	branchCommit, err := gitOutput(root, "rev-parse", packet.Branch+"^{commit}")
 	if err != nil {
@@ -2065,6 +2165,9 @@ func jobMerge(root, id string) error {
 	removedAt := time.Now().UTC().Format(time.RFC3339)
 	for _, path := range uniqueStrings(append([]string{packet.Worktree, packet.ReviewWorktree}, packet.ReviewWorktrees...)) {
 		if path != "" {
+			if err := ensureCleanupPathAllowed(root, path); err != nil {
+				return err
+			}
 			if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
 				continue
 			}

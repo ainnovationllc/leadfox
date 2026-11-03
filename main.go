@@ -16,6 +16,11 @@ Commands:
   init <name>       Create a new Leadfox project
   intake <op>       Validate a project intake
   change <op>       Validate a proposed project change
+  project <op>      Inspect an initialized Leadfox project
+  doctor            Diagnose the current Leadfox project
+  ops <operation>   Protect and inspect durable operations state
+  context export    Export a compact, non-secret Control context
+  decision <op>     Record and inspect project decisions
   plan              Create an architecture plan from requirements
   gate run <name>   Execute a project gate and report evidence
   job <operation>   Manage a bounded agent job lifecycle
@@ -112,6 +117,31 @@ func main() {
 			}
 			fmt.Fprintln(os.Stderr, "Error:", err)
 			os.Exit(2)
+		}
+	case "project":
+		if err := runProjectCommand(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(1)
+		}
+	case "doctor":
+		if err := runProjectDoctor(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(1)
+		}
+	case "ops":
+		if err := runOperationsCommand(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(1)
+		}
+	case "context":
+		if err := runContextCommand(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(1)
+		}
+	case "decision":
+		if err := runDecisionCommand(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(1)
 		}
 	case "plan":
 		if err := runPlan(os.Args[2:]); err != nil {
@@ -212,6 +242,8 @@ func runInit(args []string) error {
 		"control/requirements",
 		"control/jobs",
 		"control/handoffs",
+		"control/audit",
+		"control/evidence",
 		"skills/leadfox-control-plan-review",
 		"services",
 		"tests",
@@ -362,6 +394,11 @@ environments:
 entry_points: []
 data_stores: []
 `, projectName),
+		"control/decisions.yaml": `# Project decision and approval ledger.
+# This records governance; it does not grant permission or execute actions.
+version: 1
+decisions: []
+`,
 		"control/project-intake.md": fmt.Sprintf(`# Project intake: %s
 
 Document version: 1
@@ -465,11 +502,14 @@ skills:
     path: skills/leadfox-control-plan-review/SKILL.md
     sha256: %s
   - id: leadfox-project-planning
+    version: "1"
+    source: leadfox-distribution
     scope: global
     required_for: planning
     adoption: optional
+    sha256: %s
     note: Install globally with leadfox skill install; project initialization does not overwrite host skills.
-`, controlPlanReviewSkillSHA256()),
+`, controlPlanReviewSkillSHA256(), skillDigest()),
 		"skills/leadfox-control-plan-review/SKILL.md": string(controlPlanReviewSkill),
 		"control/pins.yaml": `# Exact artifact and definition versions used by a candidate.
 # Service-owned dependency locks remain with their service.
@@ -523,6 +563,22 @@ gates: []
 # Evidence coverage is an audit aid; it is not a compliance certification.
 frameworks: []
 controls: []
+`,
+		"control/audit/README.md": `# Control audit records
+
+Leadfox lifecycle records, approvals, gate evidence, attestations, decision
+records, and durable-artifact hashes provide project history for review.
+These records are evidence coverage only; they are not a SOC 2 certification,
+attestation, or substitute for an independent audit.
+
+Do not store credentials or secret values here. Store references, hashes,
+actors, timestamps, commits, decisions, and outcomes.
+`,
+		"control/evidence/README.md": `# Control evidence
+
+Store redacted, reviewable evidence here when a project policy requires it.
+Evidence should identify its source, commit or operation, actor, timestamp,
+result, and hash where applicable. Never store secret values.
 `,
 		"control/security.yaml": `# Project-configured secret scanning.
 # Keep scanner binaries outside the repository and pin their versions here.

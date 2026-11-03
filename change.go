@@ -29,6 +29,9 @@ func runChangeCommand(args []string) error {
 		fmt.Print(changeHelpText)
 		return nil
 	}
+	if args[0] == "impact" {
+		return runChangeImpactCommand(args[1:])
+	}
 	if args[0] != "validate" {
 		return fmt.Errorf("unknown change operation %q; use 'leadfox change --help' for usage", args[0])
 	}
@@ -248,6 +251,7 @@ const changeHelpText = `Validate a proposed change to an existing project.
 
 Usage:
   leadfox change validate [PATH] [options]
+  leadfox change impact [PATH] [options]
 
 PATH is the Markdown change plan to validate. Exit 0 means valid, 1 means
 findings, and 2 means the input could not be processed.

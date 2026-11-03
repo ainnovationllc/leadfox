@@ -150,3 +150,78 @@ The same check found three design facts that a stub could not:
 - Approval bound to an exact saved plan hash for apply operations.
 - External evidence records for CI and cloud operations.
 - Approval envelopes to reduce decision fatigue.
+
+## 4. Validate changes to CI-run checks before the main branch
+
+**Problem.** A check added to a CI job depended on repository history that the
+CI checkout did not fetch. Local and review worktrees had full history, so all
+offline validation passed; the first push to the main branch failed
+deterministically.
+
+**Proposed capability:**
+- classify checks that execute in CI;
+- require a temporary-branch validation before a change to such a check can
+  be treated as main-ready;
+- require both a normal green run and a controlled failure proving that the
+  failure is reported and artifacts remain safe;
+- record checkout depth and other CI assumptions as evidence;
+- prevent a diagnostic rerun from satisfying the main-branch acceptance
+  requirement.
+
+The rule is provider-neutral: the CI adapter may use a branch, review
+environment, or equivalent isolated validation target.
+
+## 5. Treat flaky required tests as release blockers
+
+**Problem.** A timing-dependent test intermittently failed in a required gate.
+Rerunning it was useful diagnosis, but a green rerun did not establish that
+the gate was reliable.
+
+**Proposed capability:**
+- distinguish a diagnostic rerun from a fresh acceptance run;
+- allow a project risk control to require repeated runs, injected delays, or
+  load conditions for timing-sensitive tests;
+- record the suspected cause and the reproduction conditions;
+- block promotion or deployment while a known flake remains in a required
+  gate, unless the project explicitly records an accepted exception.
+
+## 6. Enforce offline execution for job agents instead of per-command prefixes
+
+**Problem.** A project required job agents to run offline, with no network
+and no cloud tools. The rule was applied by prefixing each command with
+proxy variables. A shell quoting mistake in one inline command split it, and
+a fragment ran a real cloud tool (a database proxy on `PATH`) without the
+prefix. It started, loaded the developer's credentials, and exited on a
+malformed argument. No connection was possible, but whether the credential
+setup contacted the provider could not be proven afterwards. Audit logs do
+not record token refreshes, and the OS sandbox log did not show denials.
+
+**Proposed capability:**
+- run job agents' commands through an enforced execution wrapper, not a
+  convention. The wrapper:
+  - applies an OS-level network deny (local addresses and sockets only);
+  - removes cloud SDK directories from `PATH`, exposing named tools only
+    when a packet allows them;
+  - denies execution of named high-risk binaries, which can still be read
+    and hashed;
+- prove the wrapper with negative controls before use: a refused outbound
+  connection to a reserved test address, a denied exec of a dummy binary of
+  the blocked name, and a positive control showing normal commands and exit
+  codes pass through;
+- record, per job, which wrapper ran and which tools it exposed, and treat
+  a command run outside it as an incident;
+- since denial logging may be unavailable, record that limit, and do not
+  claim "no external access" from an empty log.
+
+**Second case (same project, same day).** The briefing let agents run
+"read-only inspection" outside the wrapper. An agent ran `terraform
+version` as an inspection, and Terraform's default update check contacted
+the vendor's checkpoint service. Only the anonymous product, version,
+platform, and signature data was sent. Lessons:
+- there is no safe "inspection" exception, because version and help
+  commands of common tools phone home by default;
+- route every agent shell command through the wrapper;
+- set the vendors' opt-out variables (for example `CHECKPOINT_DISABLE=1`)
+  at the user level as a second layer;
+- detect contact from tool cache files (for example a rewritten
+  `~/.terraform.d/checkpoint_cache`).

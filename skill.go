@@ -31,6 +31,7 @@ type skillInstallOptions struct {
 	agent    string
 	home     string
 	yes      bool
+	format   string
 	showHelp bool
 }
 
@@ -53,6 +54,8 @@ const skillHelpText = `Manage Leadfox-provided skills.
 
 Usage:
   leadfox skill list
+  leadfox skill status [--format markdown|json]
+  leadfox skill sync [--yes] [--format markdown|json]
   leadfox skill install leadfox-project-planning --global [--agent auto|claude|codex] --yes
   leadfox skill verify leadfox-project-planning --global
   leadfox skill remove leadfox-project-planning --global --yes
@@ -76,7 +79,9 @@ func runSkillCommand(args []string) error {
 		return nil
 	}
 	if id == "" && command != "list" {
-		return errors.New("a skill ID is required")
+		if command != "status" && command != "sync" {
+			return errors.New("a skill ID is required")
+		}
 	}
 	if id != "" && id != planningSkillID {
 		return fmt.Errorf("unknown Leadfox skill %q", id)
@@ -84,6 +89,10 @@ func runSkillCommand(args []string) error {
 	switch command {
 	case "list":
 		return listSkills(options)
+	case "status":
+		return statusSkills(options)
+	case "sync":
+		return syncPlanningSkill(options)
 	case "install":
 		if !options.yes {
 			return errors.New("skill installation writes user files; repeat with --yes after reviewing the target paths")
@@ -102,7 +111,7 @@ func runSkillCommand(args []string) error {
 }
 
 func parseSkillOptions(args []string) (skillInstallOptions, string, error) {
-	options := skillInstallOptions{agent: "auto"}
+	options := skillInstallOptions{agent: "auto", format: "markdown"}
 	var id string
 	for index := 0; index < len(args); index++ {
 		switch args[index] {
@@ -112,6 +121,15 @@ func parseSkillOptions(args []string) (skillInstallOptions, string, error) {
 			// Global is the only supported scope in Checkpoint 3.
 		case "--yes":
 			options.yes = true
+		case "--format":
+			if index+1 >= len(args) {
+				return options, id, errors.New("--format requires markdown or json")
+			}
+			index++
+			options.format = args[index]
+			if options.format != "markdown" && options.format != "json" {
+				return options, id, fmt.Errorf("unsupported skill report format %q", options.format)
+			}
 		case "--agent":
 			if index+1 >= len(args) {
 				return options, id, errors.New("--agent requires auto, claude, or codex")

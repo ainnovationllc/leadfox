@@ -86,6 +86,81 @@ func TestIntakeRejectsSecretLikeContent(t *testing.T) {
 	t.Fatal("expected secret-like content finding")
 }
 
+func TestIntakeAcceptsEquivalentMarkdownFormatting(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "project-intake.md")
+	text := `# Project Intake
+
+## Identity
+- Document version: 1.0.0
+- Current stage: local development
+- Last updated: 2026-11-02
+- Change summary: Initial intake
+- Project name: example
+- Project owner: Example Team
+- Intake author: Example Manager
+
+## Problem and outcome
+- Problem being solved: Coordinate onboarding
+- Desired outcome: A useful first version
+- How we will know the first version is useful: A user completes the flow
+
+## Users and primary flow
+- Primary users: Project developers
+- Main user flow:
+  1. User starts
+  2. User submits information
+  3. System confirms completion
+
+## First-version capabilities
+1. Capture information
+2. Validate information
+3. Report completion
+
+## Services and components
+| Component | Purpose | Status |
+|---|---|---|
+| Web app | User flow | proposed |
+
+## Integrations and external dependencies
+| System | Purpose | Status |
+|---|---|---|
+| none | No external system | none |
+
+## Data
+- Data: Project information
+
+## Environments
+| Environment | Purpose | Status |
+|---|---|---|
+| local | Development | confirmed |
+
+## Security and operational concerns
+- What must be protected: Project credentials
+- Important abuse or failure concerns: Accidental disclosure
+
+## First planning questions
+- Questions that must be answered before implementation: What is the first milestone?
+
+## Intake notes
+- Notes: Keep the first version local
+
+## Change history
+| Date | Version | Author | Change Description |
+|---|---|---|---|
+| 2026-11-02 | 1.0.0 | Example Manager | Initial intake |
+`
+	if err := os.WriteFile(file, []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	report, err := validateIntakeFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Valid {
+		t.Fatalf("equivalent Markdown formatting rejected: %+v", report.Findings)
+	}
+}
+
 func TestChangePlanValidatesAgainstBaseline(t *testing.T) {
 	root := t.TempDir()
 	changes := filepath.Join(root, "control", "changes")

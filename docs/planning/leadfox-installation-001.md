@@ -374,6 +374,83 @@ Deferred by request:
   skills remain untouched;
 - release publication, signing, and remote-release verification.
 
+## Intake validation robustness update
+
+The validator now accepts equivalent, readable Markdown presentations instead
+of requiring one exact rendering of the scaffold. It accepts bullet or
+ordinary field lines, dotted numeric document versions such as `1.0.0`,
+multiline list values, and change-history tables identified by their headers.
+The substantive checks remain unchanged: required information, flow items,
+services, integrations, environments, history, and secret-like content are
+still validated.
+
+Regression coverage includes the submitted Phase 1 intake style, which now
+validates with zero findings. The planning skill documents this tolerance and
+still requires the agent to run `leadfox intake validate` before finishing.
+
+## Checkpoint 8 implementation result
+
+**Status:** complete locally; no skill download or external operation is
+performed automatically.
+
+Implemented:
+
+- `leadfox skill status` with Markdown and JSON output;
+- project-local skill checksum and presence reporting;
+- global planning-skill presence and version reporting;
+- `leadfox project check [PATH]` with Markdown and JSON output;
+- initialization structure checks for required files, the `CLAUDE.md` link,
+  project skill integrity, and intake status;
+- initialization tests for a valid structure and modified project skill;
+- a separate incomplete-intake warning so a newly initialized project can be
+  structurally valid before its intake is completed;
+- no automatic global skill installation or network access.
+
+The optional global planning skill is reported as guidance when absent. The
+required project-local Control skill is an error when missing or modified.
+Existing non-empty directories remain protected by `leadfox init`.
+
+## Checkpoint 9 implementation result
+
+**Status:** complete locally; existing-project adoption is explicit and
+non-destructive.
+
+Implemented:
+
+- `leadfox project adopt PATH` as a dry-run by default;
+- `--yes` as the explicit apply confirmation;
+- creation of only missing Leadfox directories and files;
+- preservation of all existing files, instructions, skills, and `CLAUDE.md`;
+- an adoption record at `control/leadfox-adoption.yaml` listing created paths;
+- Markdown and JSON adoption reports;
+- automated coverage for dry-run behavior, preservation, adoption records, and
+  post-adoption structure checks.
+
+Adoption does not download skills, contact external systems, delete files, or
+overwrite existing project content. A pre-existing `CLAUDE.md` is preserved;
+if it is not the expected link, `leadfox project check` reports that separately
+for human resolution.
+
+## Checkpoint 10 implementation result
+
+**Status:** complete locally; synchronization is limited to the pinned built-in
+Leadfox skill distribution.
+
+Implemented:
+
+- `leadfox skill sync` as a read-only preview;
+- `leadfox skill sync --yes` for explicit synchronization;
+- source, version, and checksum pinning in `control/skills.yaml`;
+- synchronization of the optional global planning skill without network access;
+- refusal to overwrite unmanaged or modified skill files;
+- safe replacement of an older, unmodified Leadfox-managed skill;
+- Markdown and JSON reports;
+- automated coverage for dry-run behavior, current skills, and modified-skill
+  refusal.
+
+No arbitrary skill registry or download mechanism was added. External skill
+sources, signing, and remote synchronization remain future release decisions.
+
 ## Purpose
 
 Define a safe, simple, repeatable way for a user to obtain Leadfox, verify the

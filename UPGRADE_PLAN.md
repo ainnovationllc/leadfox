@@ -86,6 +86,83 @@ in Leadfox.
 - Keep scanner artifacts and findings separate from compliance certification;
   findings still require remediation, rotation and auditor review.
 
+## Phase 7 — agent capabilities (implemented)
+
+- Add a provider-neutral `control/agent-capabilities.yaml` registry for
+  capabilities supplied by an agent host, including MCP servers.
+- Allow job packets to declare required capability IDs with `--capability`.
+- Validate capability definitions and job requirements before a job starts or
+  is reviewed.
+- Provide `leadfox capability list` and `leadfox capability validate` for
+  deterministic inspection.
+- Record access, authentication, network, output-path and fallback constraints
+  without storing provider credentials.
+
+Leadfox records and validates capability requirements; the selected agent host
+is responsible for connecting to the provider, authenticating, and enforcing
+the host-side tool permissions.
+
+## Phase 8 — project decision policy (implemented)
+
+- Generate a project-owned `control/decision-policy.yaml` during `leadfox init`.
+- Define automatic actions, Control decisions requiring a record, actions
+  requiring explicit developer approval, and escalation triggers.
+- Validate the policy with `leadfox policy validate` and inspect it with
+  `leadfox policy show`.
+- Instruct project Control Agents to consult the policy and avoid repeating
+  questions already answered by an approved default.
+
+Leadfox provides policy structure and validation. It does not infer authority
+for external, destructive, production, credential, or compliance actions.
+
+## Phase 9 — risk-aware governance (foundation implemented)
+
+- Add a project-owned `control/risk-controls.yaml` registry rather than
+  hard-coding cloud, database, security, or compliance assumptions in Leadfox.
+- Allow job packets to declare risk-control IDs with repeated `--risk` flags.
+- Validate risk-control definitions when referenced, and validate them again
+  before a job starts or is reviewed.
+- Provide `leadfox risk validate` and `leadfox risk list`.
+- Carry project-defined evidence requirements and stop conditions into the
+  generated job instructions without pretending that Leadfox can interpret
+  domain-specific evidence.
+
+The foundation is intentionally declarative. It supports projects that need
+stronger review for external-tool behavior, security-sensitive changes,
+persistent operations, CI/workflow changes, destructive actions, or other
+risks, while leaving the actual controls and approval authority to the
+project.
+
+## Phase 10 — risk enforcement and durable operations (foundation implemented)
+
+- Validate declared evidence types and distinguish positive controls,
+  forbidden-action checks, clean-baseline mutations, real-tool evidence,
+  diagnostic reruns, and accepted residual risk.
+- Require real-tool evidence when a packet declares an external capability
+  dependency; record tool version, driver/mode, and what remains unproven.
+- Add persistent operations checkouts that are recorded, protected from job
+  cleanup, and used for stateful external operations.
+- Detect operational state in development worktrees and report it separately
+  from code or gate failures.
+- Retain declared artifacts outside disposable worktrees, hash them before
+  cleanup, and refuse cleanup when retention is incomplete.
+- Add CI-validation requirements for changes to CI-run checks, including
+  temporary-branch green and deliberate-red validation before main.
+- Add policy-driven approval envelopes so routine decisions are not repeatedly
+  requested while external, destructive, security, cost, production, and
+  uncertain actions still escalate.
+
+Implemented in the current lifecycle upgrade: operations checkouts are
+registered and protected, operational paths are diagnosed, saved plans can be
+hash-verified, declared artifacts are retained outside disposable worktrees,
+and cleanup or merge is refused when required retention is incomplete.
+
+The following remain planned follow-up work: richer evidence-type semantics,
+mandatory real-tool evidence for declared external capabilities, before/after
+state and inventory records, CI-validation policy enforcement, and
+policy-driven approval envelopes. These require additional compatibility and
+project-policy design before they become defaults.
+
 ## Explicit boundary
 
 Leadfox must not absorb project-specific assumptions such as Canvas, a

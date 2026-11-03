@@ -151,20 +151,20 @@ func validateIntakeFile(file string) (intakeReport, error) {
 	}
 	for _, field := range []string{
 		"Document version:", "Current stage:", "Last updated:", "Change summary:",
-		"- Project name:", "- Project owner:", "- Intake author:",
-		"- Problem being solved:", "- Desired outcome:",
-		"- How we will know the first version is useful:", "- Primary users:",
-		"- What must be protected:", "- Important abuse or failure concerns:",
-		"- Questions that must be answered before implementation:",
+		"Project name:", "Project owner:", "Intake author:",
+		"Problem being solved:", "Desired outcome:",
+		"How we will know the first version is useful:", "Primary users:",
+		"What must be protected:", "Important abuse or failure concerns:",
+		"Questions that must be answered before implementation:",
 	} {
 		if valueForField(text, field) == "" {
-			addFinding("missing-field", fmt.Sprintf("missing required field: %s", strings.TrimSuffix(strings.TrimPrefix(field, "- "), ":")))
+			addFinding("missing-field", fmt.Sprintf("missing required field: %s", strings.TrimSuffix(field, ":")))
 		}
 	}
 	version := valueForField(text, "Document version:")
 	if version != "" {
-		if parsed, parseErr := strconv.Atoi(version); parseErr != nil || parsed < 1 {
-			addFinding("invalid-version", "Document version must be a positive integer")
+		if parsed, parseErr := strconv.Atoi(strings.Split(version, ".")[0]); parseErr != nil || parsed < 1 || !documentVersionPattern.MatchString(version) {
+			addFinding("invalid-version", "Document version must be a positive integer or dotted numeric version")
 		}
 	}
 	stage := strings.ToLower(valueForField(text, "Current stage:"))
@@ -213,14 +213,34 @@ func requiredIntakeSections() []string {
 }
 
 func valueForField(text, field string) string {
-	for _, line := range strings.Split(text, "\n") {
+	lines := strings.Split(text, "\n")
+	for index, line := range lines {
 		trimmed := strings.TrimSpace(line)
+		trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, "- "))
+		trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, "* "))
 		if !strings.HasPrefix(trimmed, field) {
 			continue
 		}
 		value := strings.TrimSpace(strings.TrimPrefix(trimmed, field))
-		if value == "" || strings.HasPrefix(value, "<!--") || strings.Contains(value, "<!--") {
+		if strings.HasPrefix(value, "<!--") || strings.Contains(value, "<!--") {
 			return ""
+		}
+		if value == "" {
+			for _, continuation := range lines[index+1:] {
+				if strings.HasPrefix(strings.TrimSpace(continuation), "## ") {
+					break
+				}
+				if strings.TrimSpace(continuation) == "" {
+					continue
+				}
+				if len(continuation) == len(strings.TrimLeft(continuation, " \t")) {
+					break
+				}
+				candidate := strings.TrimSpace(continuation)
+				if !strings.Contains(candidate, "<!--") {
+					return "list"
+				}
+			}
 		}
 		return value
 	}
@@ -278,22 +298,76 @@ func hasCompletedTableRow(section string, allowNone bool) bool {
 
 func hasCompletedEnvironment(text, name string) bool {
 	for _, line := range strings.Split(sectionText(text, "Environments"), "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "| "+name+" ") && !strings.Contains(trimmed, "<!--") {
-			return len(strings.Split(trimmed, "|")) >= 6
+		cells := tableCells(line)
+		if len(cells) >= 2 && strings.EqualFold(strings.TrimSpace(cells[0]), name) && !strings.Contains(line, "<!--") && !strings.Contains(line, "---") {
+			filled := 0
+			for _, cell := range cells[1:] {
+				if strings.TrimSpace(cell) != "" {
+					filled++
+				}
+			}
+			if filled >= 1 {
+				return true
+			}
 		}
 	}
 	return false
 }
 
 func hasCompletedChangeHistory(text string) bool {
-	for _, line := range strings.Split(sectionText(text, "Change history"), "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "|") && strings.Contains(trimmed, "|") && !strings.Contains(trimmed, "---") && !strings.Contains(trimmed, "Version") && !strings.Contains(trimmed, "<!--") {
-			return strings.HasPrefix(trimmed, "| 1 ") || strings.HasPrefix(trimmed, "|1 ")
+	section := sectionText(text, "Change history")
+	versionIndex := -1
+	for _, line := range strings.Split(section, "\n") {
+		cells := tableCells(line)
+		if len(cells) == 0 || strings.Contains(line, "---") {
+			continue
+		}
+		for index, cell := range cells {
+			if strings.EqualFold(strings.TrimSpace(cell), "version") {
+				versionIndex = index
+				break
+			}
+		}
+		if versionIndex >= 0 {
+			break
+		}
+	}
+	if versionIndex < 0 {
+		return false
+	}
+	for _, line := range strings.Split(section, "\n") {
+		cells := tableCells(line)
+		if len(cells) <= versionIndex || strings.Contains(line, "---") || strings.Contains(line, "<!--") {
+			continue
+		}
+		version := strings.TrimSpace(cells[versionIndex])
+		if documentVersionPattern.MatchString(version) {
+			filled := 0
+			for _, cell := range cells {
+				if strings.TrimSpace(cell) != "" {
+					filled++
+				}
+			}
+			if filled >= 2 {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+var documentVersionPattern = regexp.MustCompile(`^[1-9][0-9]*(?:\.[0-9]+)*$`)
+
+func tableCells(line string) []string {
+	trimmed := strings.TrimSpace(line)
+	if !strings.HasPrefix(trimmed, "|") || !strings.Contains(trimmed, "|") {
+		return nil
+	}
+	parts := strings.Split(trimmed, "|")
+	if len(parts) < 3 {
+		return nil
+	}
+	return parts[1 : len(parts)-1]
 }
 
 func printIntakeMarkdown(report intakeReport) {
