@@ -16,11 +16,11 @@ fi
 source_commit=$(git rev-parse HEAD)
 release_root="$repo_root/dist/release-candidate"
 version_root="$release_root/releases/download/v$VERSION"
-latest_root="$release_root/releases/latest"
 stage_root=$(mktemp -d "${TMPDIR:-/tmp}/leadfox-release.XXXXXX")
 trap 'rm -rf "$stage_root"' EXIT
 
 rm -rf "$release_root"
+latest_root="$release_root/releases/latest/download"
 mkdir -p "$version_root" "$latest_root"
 
 sha256_file() {
