@@ -73,11 +73,16 @@ leadfox decision <operation>   Record or inspect decisions and approvals
 leadfox intake validate         Validate the living project intake
 leadfox change validate PATH    Validate a proposed project change
 leadfox change impact PATH      Summarize change impact and review signals
+leadfox change jobs PATH        Preview or create draft jobs from a change workflow
+leadfox change hold PATH        List or release change-plan hold points
 leadfox skill status             Report project and global skill status
 leadfox skill sync               Preview or synchronize a pinned built-in skill
 leadfox plan                   Build an architecture plan from requirements
 leadfox gate run <name>        Run a project gate
 leadfox job <operation>        Create and review bounded agent jobs
+leadfox job status JOB-ID      Show lifecycle, gates, evidence, blockers, and next action
+leadfox job handoff draft ID   Draft a bounded handoff from packet and evidence metadata
+leadfox job scope add ID       Record a scope amendment and invalidate stale review evidence
 leadfox job readiness JOB-ID    Check whether a job is ready to start
 leadfox job context JOB-ID      Export bounded job context
 leadfox job validate JOB-ID    Validate handoff and evidence completeness

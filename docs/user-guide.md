@@ -168,6 +168,44 @@ leadfox change validate control/changes/CHANGE-001-add-service.md --format json
 leadfox change impact control/changes/CHANGE-001-add-service.md
 ```
 
+Change plans may have an adjacent workflow file named
+`CHANGE-001-add-service.md.workflow.yaml`. It can declare hold points and
+draft job designs without granting approval:
+
+```yaml
+version: 1
+hold_points:
+  - id: owner-review
+    description: Owner must approve the external integration
+    status: open
+jobs:
+  - id: JOB-UI-001
+    role: service
+    objective: Implement the bounded UI change
+    allowed_paths: [services/web/**]
+    gates: [local-dev]
+    hold_point: owner-review
+```
+
+Preview or create the draft packets:
+
+```sh
+leadfox change jobs control/changes/CHANGE-001-add-service.md
+leadfox change jobs control/changes/CHANGE-001-add-service.md --create --yes
+```
+
+Generated packets remain drafts and carry the change and hold-point
+references. Starting one is refused until its hold is explicitly released:
+
+```sh
+leadfox change hold list control/changes/CHANGE-001-add-service.md
+leadfox change hold release control/changes/CHANGE-001-add-service.md \
+  owner-review --by developer --reason "Reviewed external integration" --yes
+```
+
+The workflow file is project-controlled input. Leadfox does not infer that a
+hold is safe to release.
+
 Validation is deterministic. Exit `0` means the document is structurally
 complete, exit `1` reports findings that need correction, and exit `2` means
 the input could not be processed. A passing result is not approval and does
@@ -358,6 +396,12 @@ leadfox job new JOB-001 \
   --allow services/registration/** \
   --exclude infrastructure/** \
   --gate local-dev
+
+# Reuse only the design metadata from an existing packet
+leadfox job new JOB-002 --like JOB-001 --objective "Apply the same pattern elsewhere"
+
+# Or use a neutral role template, then add project-specific scope and gates
+leadfox job new JOB-003 --template verifier --allow services/example/** --gate local-dev
 ```
 
 Control then completes the packet, adds acceptance criteria and settings or
@@ -373,6 +417,23 @@ Start work in an isolated worktree:
 leadfox job start JOB-001 --worktree /tmp/project-job-001
 ```
 
+Projects may declare safe, repeatable worktree setup in
+`control/worktree.yaml`:
+
+```yaml
+links:
+  - source: .local
+    target: .local
+resources:
+  - id: local-database
+    marker: .leadfox/resources/local-database.running
+```
+
+Leadfox creates only declared relative symlinks when starting or reviewing a
+worktree. Cleanup refuses to remove a worktree while a declared resource marker
+exists. This is an explicit project signal, not a claim that Leadfox can see
+every process or container on the host.
+
 The agent receives only the packet as its work brief. It must stay inside the
 allowed paths, obey stop conditions, run its checks, and return a handoff.
 
@@ -381,6 +442,7 @@ Useful lifecycle operations include:
 ```text
 leadfox job scope JOB-001
 leadfox job review JOB-001 --commit <sha> --worktree /tmp/project-review-001
+leadfox job review JOB-001 --commit <sha> --worktree /tmp/project-review-001 --repeat 3
 leadfox job attest JOB-001 --check local-dev/scope --result passed
 leadfox job evidence JOB-001 --criterion C1 --provider github-actions --run-id 123 --commit <sha> --conclusion success
 leadfox job readiness JOB-001
@@ -395,12 +457,66 @@ leadfox job reissue JOB-001 JOB-002 --reason "new base required"
 
 Review checks scope, runs declared gates, records evidence, and validates the
 reviewed commit. Approval is a separate decision. Merge is not deployment.
+`--repeat N` repeats each declared gate in the same clean review worktree;
+mixed outcomes are recorded as flaky and do not silently become a pass.
+
+Use the read-only status report when reviewing a job or handing context to a
+Control agent:
+
+```sh
+leadfox job status JOB-001
+leadfox job status JOB-001 --format json
+```
+
+The report includes lifecycle state, scope, gate results, acceptance criteria,
+durable artifacts, blockers, and the recommended next action. It does not
+print gate output or secret values.
+
+Leadfox can draft a handoff from packet metadata and recorded evidence:
+
+```sh
+leadfox job handoff draft JOB-001
+```
+
+The command refuses to overwrite an existing handoff. The agent or developer
+must fill in the narrative, checks, assumptions, and next step. A draft is not
+an approval and must be committed in the appropriate job worktree before
+review.
+
+If the approved scope changes, record it explicitly:
+
+```sh
+leadfox job scope add JOB-001 \
+  --allow tests/example/** \
+  --gate integration \
+  --reason "The implementation requires an integration fixture" \
+  --actor Control
+```
+
+Scope amendments preserve the original scope history. When review evidence
+already exists, Leadfox invalidates the current review evidence and requires a
+new review. It never silently widens a job or preserves stale approval.
 
 `job readiness` checks that a packet is bounded and explicitly marked ready.
 `job context` exports only the objective, role, scope, gates, capability and
 risk references, and acceptance-criterion IDs needed by the agent. `job
 validate` checks reviewed handoff and evidence completeness; none of these
 commands approves or starts a job.
+
+Checks that are relevant only to specific changes may declare
+`required_when_changed` in `control/gates.yaml`:
+
+```yaml
+- id: canvas-live-check
+  manual: true
+  required_when_changed:
+    - services/ranger/**
+    - scripts/local/edge/**
+```
+
+During job review, a check with no matching changed path is recorded as
+skipped with an explicit applicability reason. Direct gate runs remain
+conservative and run the check unless a review supplies changed-path context.
 
 Declare durable artifacts in a job packet when they must survive worktree
 cleanup:

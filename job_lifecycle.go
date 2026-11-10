@@ -25,7 +25,10 @@ const jobHelpText = `Manage a bounded Leadfox agent job.
 Usage:
   leadfox job new <id> [options]
   leadfox job start <id> [options]
+  leadfox job status <id> [--format markdown|json]
   leadfox job scope <id> [options]
+  leadfox job scope add <id> [options]
+  leadfox job handoff draft <id>
   leadfox job sync <id> [--actor NAME] [--reason TEXT]
   leadfox job reissue <old-id> <new-id> [--reason TEXT]
   leadfox job review <id> [options]
@@ -49,6 +52,8 @@ Options:
       --commit SHA        Commit to review
       --role ROLE         Job role for job new
       --objective TEXT    Job objective for job new
+      --template NAME     Job template for job new
+      --like JOB-ID       Copy draft design metadata from another job
       --allow GLOB        Allowed path (repeatable)
       --exclude GLOB      Excluded path (repeatable)
       --gate ID           Required gate (repeatable)
@@ -64,11 +69,13 @@ Options:
       --provider NAME     External evidence provider (for example github-actions)
       --run-id ID         External CI run identifier
       --attempt N         External run attempt number (default: 1)
+      --repeat N          Repeat each review gate N times and record consistency
       --conclusion VALUE  success, failure, cancelled, or timed_out
       --evidence-url URL  Link to the external run or evidence
       --artifact REF      Artifact reference (repeatable)
       --artifact-id ID    Declared durable artifact to retain
       --diagnostic        Record evidence without satisfying the criterion
+      --format FORMAT     Markdown or JSON output where supported
   -h, --help              Show this help message
 
 Review creates a clean detached worktree, resolves commits to full IDs,
@@ -121,6 +128,18 @@ type jobPacket struct {
 	ResumeAt           string                `yaml:"resume_at,omitempty"`
 	Supersedes         string                `yaml:"supersedes,omitempty"`
 	SupersededBy       string                `yaml:"superseded_by,omitempty"`
+	ScopeAmendments    []jobScopeAmendment   `yaml:"scope_amendments,omitempty"`
+	ChangePlan         string                `yaml:"change_plan,omitempty"`
+	HoldPoint          string                `yaml:"hold_point,omitempty"`
+}
+
+type jobScopeAmendment struct {
+	AddedAllowed  []string `yaml:"added_allowed,omitempty"`
+	AddedExcluded []string `yaml:"added_excluded,omitempty"`
+	AddedGates    []string `yaml:"added_gates,omitempty"`
+	Reason        string   `yaml:"reason"`
+	Actor         string   `yaml:"actor"`
+	RecordedAt    string   `yaml:"recorded_at"`
 }
 
 type jobTransition struct {
@@ -269,10 +288,12 @@ type setupEvidenceDocument struct {
 
 type jobOptions struct {
 	base, worktree, branch, commit, role, objective, verdict string
+	template, like, format                                   string
 	approvedBy, actor, reason, note, result, check           string
 	criterion, provider, runID, conclusion, evidenceURL      string
 	artifactID                                               string
 	attempt                                                  int
+	repeat                                                   int
 	diagnostic                                               bool
 	artifacts                                                []string
 	allow, exclude, gates, setup, capabilities, risks        []string
@@ -288,6 +309,70 @@ func runJobCommand(args []string) error {
 	operation := args[0]
 	if operation == "readiness" || operation == "context" || operation == "validate" {
 		return runJobInspection(operation, args[1:])
+	}
+	if operation == "status" {
+		options, id, err := parseJobOptions(args[1:])
+		if err != nil {
+			return err
+		}
+		if options.showHelp {
+			fmt.Println("Usage: leadfox job status <id> [--format markdown|json]")
+			return nil
+		}
+		if id == "" {
+			return errors.New("a job ID is required")
+		}
+		format := options.format
+		if format == "" {
+			format = "markdown"
+		}
+		if format != "markdown" && format != "json" {
+			return errors.New("--format requires markdown or json")
+		}
+		root, err := gitRoot(".")
+		if err != nil {
+			return err
+		}
+		return jobStatus(root, id, format)
+	}
+	if operation == "handoff" && len(args) > 1 && args[1] == "draft" {
+		options, id, err := parseJobOptions(args[2:])
+		if err != nil {
+			return err
+		}
+		if options.showHelp {
+			fmt.Println("Usage: leadfox job handoff draft <id>")
+			return nil
+		}
+		if id == "" {
+			return errors.New("a job ID is required")
+		}
+		root, err := gitRoot(".")
+		if err != nil {
+			return err
+		}
+		return jobHandoffDraft(root, id)
+	}
+	if operation == "scope" && len(args) > 1 && args[1] == "add" {
+		options, id, err := parseJobOptions(args[2:])
+		if err != nil {
+			return err
+		}
+		if options.showHelp {
+			fmt.Println("Usage: leadfox job scope add <id> --reason TEXT --actor NAME [--allow GLOB] [--exclude GLOB] [--gate ID]")
+			return nil
+		}
+		if id == "" {
+			return errors.New("a job ID is required")
+		}
+		if err := validateJobOptions("scope-add", options); err != nil {
+			return err
+		}
+		root, err := gitRoot(".")
+		if err != nil {
+			return err
+		}
+		return jobScopeAdd(root, id, options)
 	}
 	if operation == "reissue" {
 		if len(args) < 3 {
@@ -445,6 +530,20 @@ func parseJobOptions(args []string) (jobOptions, string, error) {
 			}
 			o.objective = v
 			i = n
+		case "--template":
+			o.used["template"] = true
+			v, n, e := requiredOptionValue(args, i, arg)
+			if e != nil {
+				return o, id, e
+			}
+			o.template, i = v, n
+		case "--like":
+			o.used["like"] = true
+			v, n, e := requiredOptionValue(args, i, arg)
+			if e != nil {
+				return o, id, e
+			}
+			o.like, i = v, n
 		case "--verdict":
 			o.used["verdict"] = true
 			v, n, e := requiredOptionValue(args, i, arg)
@@ -528,6 +627,17 @@ func parseJobOptions(args []string) (jobOptions, string, error) {
 			}
 			o.attempt = parsedAttempt
 			i = n
+		case "--repeat":
+			o.used["repeat"] = true
+			v, n, e := requiredOptionValue(args, i, arg)
+			if e != nil {
+				return o, id, e
+			}
+			parsedRepeat, scanErr := strconv.Atoi(v)
+			if scanErr != nil || parsedRepeat < 1 {
+				return o, id, errors.New("--repeat must be a positive integer")
+			}
+			o.repeat, i = parsedRepeat, n
 		case "--conclusion":
 			o.used["conclusion"] = true
 			v, n, e := requiredOptionValue(args, i, arg)
@@ -559,6 +669,13 @@ func parseJobOptions(args []string) (jobOptions, string, error) {
 		case "--diagnostic":
 			o.used["diagnostic"] = true
 			o.diagnostic = true
+		case "--format":
+			o.used["format"] = true
+			v, n, e := requiredOptionValue(args, i, arg)
+			if e != nil {
+				return o, id, e
+			}
+			o.format, i = v, n
 		case "--allow":
 			o.used["allow"] = true
 			v, n, e := requiredOptionValue(args, i, arg)
@@ -622,11 +739,12 @@ func parseJobOptions(args []string) (jobOptions, string, error) {
 
 func validateJobOptions(operation string, o jobOptions) error {
 	allowed := map[string]map[string]bool{
-		"new":       {"base": true, "worktree": true, "branch": true, "role": true, "objective": true, "allow": true, "exclude": true, "gate": true, "setup": true, "capability": true, "risk": true},
+		"new":       {"base": true, "worktree": true, "branch": true, "role": true, "objective": true, "template": true, "like": true, "allow": true, "exclude": true, "gate": true, "setup": true, "capability": true, "risk": true},
 		"start":     {"base": true, "worktree": true, "branch": true},
 		"scope":     {"worktree": true, "commit": true},
+		"scope-add": {"allow": true, "exclude": true, "gate": true, "reason": true, "actor": true},
 		"sync":      {"actor": true, "reason": true},
-		"review":    {"worktree": true, "commit": true, "reason": true},
+		"review":    {"worktree": true, "commit": true, "reason": true, "repeat": true},
 		"approve":   {"verdict": true, "approved-by": true, "note": true},
 		"attest":    {"check": true, "result": true, "approved-by": true, "note": true},
 		"evidence":  {"criterion": true, "provider": true, "run-id": true, "attempt": true, "commit": true, "conclusion": true, "evidence-url": true, "artifact": true, "diagnostic": true, "actor": true},
@@ -640,6 +758,8 @@ func validateJobOptions(operation string, o jobOptions) error {
 		"readiness": {},
 		"context":   {},
 		"validate":  {},
+		"status":    {"format": true},
+		"handoff":   {},
 	}
 	operationAllowed, found := allowed[operation]
 	if !found {
@@ -708,6 +828,50 @@ func jobNew(root, id string, o jobOptions) error {
 	} else if !os.IsNotExist(err) {
 		return err
 	}
+	var source *jobPacket
+	if o.like != "" {
+		candidate, _, readErr := readJob(root, o.like)
+		if readErr != nil {
+			return fmt.Errorf("read template job %s: %w", o.like, readErr)
+		}
+		source = &candidate
+		if !o.used["role"] {
+			o.role = candidate.Role
+		}
+		if !o.used["objective"] {
+			o.objective = candidate.Objective
+		}
+		if !o.used["allow"] {
+			o.allow = append([]string(nil), candidate.AllowedPaths...)
+		}
+		if !o.used["exclude"] {
+			o.exclude = append([]string(nil), candidate.ExcludedPaths...)
+		}
+		if !o.used["gate"] {
+			o.gates = append([]string(nil), candidate.Gates...)
+		}
+		if !o.used["setup"] {
+			o.setup = append([]string(nil), candidate.ReviewSetup...)
+		}
+		if !o.used["capability"] {
+			o.capabilities = append([]string(nil), candidate.Capabilities...)
+		}
+		if !o.used["risk"] {
+			o.risks = append([]string(nil), candidate.RiskControls...)
+		}
+	}
+	if o.template != "" {
+		role, objective, err := jobTemplateDefaults(o.template)
+		if err != nil {
+			return err
+		}
+		if !o.used["role"] {
+			o.role = role
+		}
+		if !o.used["objective"] {
+			o.objective = objective
+		}
+	}
 	if o.role == "" {
 		o.role = "service"
 	}
@@ -722,12 +886,44 @@ func jobNew(root, id string, o jobOptions) error {
 		return err
 	}
 	packet := jobPacket{ID: id, Status: "draft", Role: o.role, Objective: o.objective, BaseBranch: o.base, AllowedPaths: o.allow, ExcludedPaths: o.exclude, Gates: o.gates, ReviewSetup: o.setup, Capabilities: o.capabilities, RiskControls: o.risks, CreatedAt: now, UpdatedAt: now}
+	if source != nil {
+		for _, criterion := range source.AcceptanceCriteria {
+			criterion.Status = "pending"
+			criterion.Evidence = nil
+			criterion.UpdatedAt = ""
+			packet.AcceptanceCriteria = append(packet.AcceptanceCriteria, criterion)
+		}
+		for _, artifact := range source.DurableArtifacts {
+			artifact.Retained = false
+			artifact.RetainedSHA256 = ""
+			artifact.RetainedBy = ""
+			artifact.RetainedAt = ""
+			packet.DurableArtifacts = append(packet.DurableArtifacts, artifact)
+		}
+	}
 	body := "# " + id + "\n\n## Objective\n\n" + o.objective + "\n\n## Agent instructions\n\nRead the approved project documentation before starting. Do not modify files outside the allowed paths. Return a handoff listing changed paths, checks run, results, assumptions, unresolved items, and the recommended next step.\n\n## Agent capabilities\n\nIf capabilities are listed in the packet, the agent host must provide them before work begins. Leadfox records the requirement but does not connect to providers or supply credentials. If a required capability is unavailable, stop and report it.\n\n## Risk controls\n\nIf risk controls are listed in the packet, read each declared control in control/risk-controls.yaml before starting. Treat its required evidence and stop conditions as mandatory review inputs. Leadfox validates the references but does not interpret project-specific risk rules.\n\n## Durable artifacts\n\nIf durable artifacts are declared in this packet, copy and hash them outside the disposable worktree with `leadfox job retain` before merge. Cleanup refuses to proceed until every required artifact is retained.\n\n## Git provenance\n\n`base_commit` and `branch_start_commit` identify the commit from which the job branch was created. The shared lifecycle start record is committed immediately afterward and is reachable from the job branch; its SHA is intentionally not stored inside that same commit because a commit cannot contain its own ID.\n\n## Acceptance\n\nSet the packet status to ready after Control has completed the job design.\n"
 	if err := writeJob(root, packet, body); err != nil {
 		return err
 	}
 	fmt.Printf("Created draft job packet: %s\n", path)
 	return nil
+}
+
+func jobTemplateDefaults(name string) (string, string, error) {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "service":
+		return "service", "Implement one bounded service change under the declared scope.", nil
+	case "integration":
+		return "integration", "Implement and verify one bounded integration or environment change.", nil
+	case "infrastructure":
+		return "infrastructure", "Implement one bounded infrastructure change with offline validation where possible.", nil
+	case "contract":
+		return "contract", "Change a contract and update its consumers and verification evidence.", nil
+	case "verifier":
+		return "verifier", "Independently verify the claimed change, its scope, tests, and evidence.", nil
+	default:
+		return "", "", fmt.Errorf("unknown job template %q; use service, integration, infrastructure, contract, or verifier", name)
+	}
 }
 
 func jobStart(root, id string, o jobOptions) error {
@@ -743,6 +939,9 @@ func jobStart(root, id string, o jobOptions) error {
 	}
 	if packet.Status != "ready" {
 		return fmt.Errorf("job %s is %q; set it to ready after Control approval", id, packet.Status)
+	}
+	if err := ensureJobHoldReleased(root, packet); err != nil {
+		return err
 	}
 	clean, err := gitClean(root)
 	if err != nil {
@@ -788,6 +987,10 @@ func jobStart(root, id string, o jobOptions) error {
 	baseCommit = strings.TrimSpace(baseCommit)
 	if _, err := gitOutput(root, "worktree", "add", "-b", branch, worktree, baseCommit); err != nil {
 		return fmt.Errorf("create job worktree: %w", err)
+	}
+	if err := applyWorktreeEnvironment(root, worktree); err != nil {
+		_, _ = gitOutput(root, "worktree", "remove", "--force", worktree)
+		return err
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	appendTransition(&packet, "running", "job started", "Control", now)
@@ -1011,7 +1214,7 @@ func runReviewSetup(worktree string, commands []string, timeout time.Duration) (
 	return results, nil
 }
 
-func runJobGates(root string, packet jobPacket, worktree, commit string, setupErr error, setupResults []setupResult) ([]jobGateEvidence, error) {
+func runJobGates(root string, packet jobPacket, worktree, commit string, setupErr error, setupResults []setupResult, repeat int) ([]jobGateEvidence, error) {
 	if len(packet.Gates) == 0 {
 		return nil, nil
 	}
@@ -1025,6 +1228,16 @@ func runJobGates(root string, packet jobPacket, worktree, commit string, setupEr
 	if err != nil {
 		return nil, err
 	}
+	changedPaths := []string{}
+	base := packet.BaseCommit
+	if packet.ScopeBaseCommit != "" {
+		base = packet.ScopeBaseCommit
+	}
+	if base != "" {
+		if output, diffErr := gitOutput(worktree, "diff", "--name-only", base+"..."+commit); diffErr == nil {
+			changedPaths = nonEmptyLines(output)
+		}
+	}
 	var firstErr error
 	for _, gateName := range packet.Gates {
 		var result gateResult
@@ -1033,7 +1246,7 @@ func runJobGates(root string, packet jobPacket, worktree, commit string, setupEr
 			now := time.Now().UTC()
 			result = gateResult{Gate: gateName, Worktree: worktree, StartedAt: now, FinishedAt: now, Status: "failed", Checks: []checkResult{{ID: "review-setup", Status: "failed", ExitCode: 1, Reason: setupErr.Error()}}}
 		} else {
-			result, err = executeGate(worktree, gateOptions{gateName: gateName, worktree: worktree, timeout: 10 * time.Minute})
+			result, err = executeGateRepeated(worktree, gateOptions{gateName: gateName, worktree: worktree, timeout: 10 * time.Minute, changedPaths: changedPaths}, repeat)
 			if err != nil {
 				now := time.Now().UTC()
 				result = gateResult{Gate: gateName, Worktree: worktree, StartedAt: now, FinishedAt: now, Status: "failed", Checks: []checkResult{{ID: "gate-runner", Status: "failed", ExitCode: 1, Reason: err.Error()}}}
@@ -1101,12 +1314,15 @@ func gateResultVerified(result gateResult, gateName string, packet jobPacket) bo
 	if result.Status == "failed" || result.Status == "deferred" {
 		return false
 	}
-	for _, item := range result.Checks {
-		if item.Status == "failed" || item.Status == "deferred" {
+	for _, run := range gateResultRuns(result) {
+		if run.Status == "failed" || run.Status == "deferred" {
 			return false
 		}
-		if item.Status == "manual" {
-			if !hasAttestation(packet.Attestations, gateName, item.ID) {
+		for _, item := range run.Checks {
+			if item.Status == "failed" || item.Status == "deferred" {
+				return false
+			}
+			if item.Status == "manual" && !hasAttestation(packet.Attestations, gateName, item.ID) {
 				return false
 			}
 		}
@@ -1115,17 +1331,31 @@ func gateResultVerified(result gateResult, gateName string, packet jobPacket) bo
 }
 
 func gateResultReason(result gateResult, gateName string, packet jobPacket) string {
-	for _, item := range result.Checks {
-		if item.Status == "failed" {
-			return item.ID + " failed"
-		}
-		if item.Status == "manual" {
-			if !hasAttestation(packet.Attestations, gateName, item.ID) {
+	for _, run := range gateResultRuns(result) {
+		for _, item := range run.Checks {
+			if item.Status == "failed" {
+				return item.ID + " failed"
+			}
+			if item.Status == "manual" && !hasAttestation(packet.Attestations, gateName, item.ID) {
 				return gateName + "/" + item.ID + " requires explicit attestation"
 			}
 		}
 	}
 	return "manual or deferred checks require explicit attestation"
+}
+
+// gateResultRuns returns the authoritative individual runs. Repeated results
+// retain a summary at the top level, but review decisions must inspect every
+// run so a later failure cannot be hidden by the first run's summary.
+func gateResultRuns(result gateResult) []gateResult {
+	if len(result.Runs) == 0 {
+		return []gateResult{result}
+	}
+	var runs []gateResult
+	for _, run := range result.Runs {
+		runs = append(runs, gateResultRuns(run)...)
+	}
+	return runs
 }
 
 func hasAttestation(attestations []jobAttestation, gate, check string) bool {
@@ -1366,13 +1596,21 @@ func jobReview(root, id string, o jobOptions) error {
 	if _, err := gitOutput(root, "worktree", "add", "--detach", worktree, commit); err != nil {
 		return fmt.Errorf("create review worktree: %w", err)
 	}
+	if err := applyWorktreeEnvironment(root, worktree); err != nil {
+		_, _ = gitOutput(root, "worktree", "remove", "--force", worktree)
+		return err
+	}
 	if err := checkJobScope(root, packet, worktree, commit); err != nil {
 		_, _ = gitOutput(root, "worktree", "remove", "--force", worktree)
 		return err
 	}
 	packet.Attestations = appendScopeAttestations(worktree, packet)
 	setupResults, setupErr := runReviewSetup(worktree, packet.ReviewSetup, 10*time.Minute)
-	evidence, gateErr := runJobGates(root, packet, worktree, commit, setupErr, setupResults)
+	repeat := o.repeat
+	if repeat == 0 {
+		repeat = 1
+	}
+	evidence, gateErr := runJobGates(root, packet, worktree, commit, setupErr, setupResults, repeat)
 	reviewErr := setupErr
 	if reviewErr == nil {
 		reviewErr = gateErr
@@ -1435,15 +1673,17 @@ func reviewEvidenceState(root string, evidence []jobGateEvidence) evidenceState 
 			state.Failed = true
 			continue
 		}
-		if document.Result.Status == "failed" || document.Result.Status == "deferred" {
-			state.Failed = true
-		}
-		for _, check := range document.Result.Checks {
-			if check.Status == "failed" || check.Status == "deferred" {
+		for _, run := range gateResultRuns(document.Result) {
+			if run.Status == "failed" || run.Status == "deferred" {
 				state.Failed = true
 			}
+			for _, check := range run.Checks {
+				if check.Status == "failed" || check.Status == "deferred" {
+					state.Failed = true
+				}
+			}
 		}
-		if len(document.Result.Checks) > 0 {
+		if len(gateResultRuns(document.Result)) > 0 {
 			checks, err := pendingManualChecks(root, item)
 			if err == nil && len(checks) > 0 {
 				state.Pending = true
@@ -1703,9 +1943,11 @@ func pendingManualChecks(root string, evidence jobGateEvidence) ([]string, error
 		return nil, err
 	}
 	var pending []string
-	for _, check := range document.Result.Checks {
-		if check.Status == "manual" && !hasAttestation(document.Attestations, evidence.Gate, check.ID) && !hasFailedAttestation(document.Attestations, evidence.Gate, check.ID) {
-			pending = append(pending, evidence.Gate+"/"+check.ID)
+	for _, run := range gateResultRuns(document.Result) {
+		for _, check := range run.Checks {
+			if check.Status == "manual" && !hasAttestation(document.Attestations, evidence.Gate, check.ID) && !hasFailedAttestation(document.Attestations, evidence.Gate, check.ID) {
+				pending = append(pending, evidence.Gate+"/"+check.ID)
+			}
 		}
 	}
 	return pending, nil
@@ -1721,9 +1963,11 @@ func failedManualChecks(root string, evidence jobGateEvidence) ([]string, error)
 		return nil, err
 	}
 	var failed []string
-	for _, check := range document.Result.Checks {
-		if check.Status == "manual" && hasFailedAttestation(document.Attestations, evidence.Gate, check.ID) {
-			failed = append(failed, evidence.Gate+"/"+check.ID)
+	for _, run := range gateResultRuns(document.Result) {
+		for _, check := range run.Checks {
+			if check.Status == "manual" && hasFailedAttestation(document.Attestations, evidence.Gate, check.ID) {
+				failed = append(failed, evidence.Gate+"/"+check.ID)
+			}
 		}
 	}
 	return failed, nil
@@ -1775,12 +2019,17 @@ func verifyGateEvidence(root string, packet jobPacket) error {
 		if document.Result.Status != evidence.Status || document.Result.Status == "failed" || document.Result.Status == "deferred" {
 			return fmt.Errorf("required gate evidence %q is not passing", evidence.Gate)
 		}
-		for _, check := range document.Result.Checks {
-			if check.Status == "failed" || check.Status == "deferred" {
-				return fmt.Errorf("required gate evidence %q contains a %s check", evidence.Gate, check.Status)
+		for _, run := range gateResultRuns(document.Result) {
+			if run.Status == "failed" || run.Status == "deferred" {
+				return fmt.Errorf("required gate evidence %q contains a %s run", evidence.Gate, run.Status)
 			}
-			if check.Status == "manual" && !hasAttestation(document.Attestations, evidence.Gate, check.ID) {
-				return fmt.Errorf("required gate evidence %q contains unattested manual check %q", evidence.Gate, check.ID)
+			for _, check := range run.Checks {
+				if check.Status == "failed" || check.Status == "deferred" {
+					return fmt.Errorf("required gate evidence %q contains a %s check", evidence.Gate, check.Status)
+				}
+				if check.Status == "manual" && !hasAttestation(document.Attestations, evidence.Gate, check.ID) {
+					return fmt.Errorf("required gate evidence %q contains unattested manual check %q", evidence.Gate, check.ID)
+				}
 			}
 		}
 	}
@@ -1964,6 +2213,9 @@ func jobTerminate(root, id, status string, o jobOptions) error {
 		if err := ensureCleanupPathAllowed(root, path); err != nil {
 			return err
 		}
+		if err := ensureNoActiveWorktreeResources(root, path); err != nil {
+			return err
+		}
 		if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
 			continue
 		}
@@ -2138,6 +2390,9 @@ func jobMerge(root, id string) error {
 	}
 	for _, path := range uniqueStrings(append([]string{packet.Worktree, packet.ReviewWorktree}, packet.ReviewWorktrees...)) {
 		if err := ensureCleanupPathAllowed(root, path); err != nil {
+			return fmt.Errorf("refusing merge: %w", err)
+		}
+		if err := ensureNoActiveWorktreeResources(root, path); err != nil {
 			return fmt.Errorf("refusing merge: %w", err)
 		}
 	}

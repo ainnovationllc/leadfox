@@ -19,13 +19,14 @@ import (
 )
 
 type gateOptions struct {
-	gateName string
-	checkID  string
-	worktree string
-	format   string
-	timeout  time.Duration
-	repeat   int
-	showHelp bool
+	gateName     string
+	checkID      string
+	worktree     string
+	format       string
+	timeout      time.Duration
+	repeat       int
+	changedPaths []string
+	showHelp     bool
 }
 
 type platformIdentity struct {
@@ -47,12 +48,13 @@ type gate struct {
 }
 
 type check struct {
-	ID           string `yaml:"id"`
-	Description  string `yaml:"description"`
-	Run          string `yaml:"run"`
-	RequiresPath string `yaml:"requires_path"`
-	Manual       bool   `yaml:"manual"`
-	Deferred     bool   `yaml:"deferred"`
+	ID                  string   `yaml:"id"`
+	Description         string   `yaml:"description"`
+	Run                 string   `yaml:"run"`
+	RequiresPath        string   `yaml:"requires_path"`
+	Manual              bool     `yaml:"manual"`
+	Deferred            bool     `yaml:"deferred"`
+	RequiredWhenChanged []string `yaml:"required_when_changed,omitempty"`
 }
 
 type checkResult struct {
@@ -78,6 +80,9 @@ type gateResult struct {
 	Platform      platformIdentity `json:"platform" yaml:"platform"`
 	Applicable    bool             `json:"applicable" yaml:"applicable"`
 	Applicability string           `json:"applicability,omitempty" yaml:"applicability,omitempty"`
+	Repeat        int              `json:"repeat,omitempty" yaml:"repeat,omitempty"`
+	Flaky         bool             `json:"flaky,omitempty" yaml:"flaky,omitempty"`
+	Runs          []gateResult     `json:"runs,omitempty" yaml:"runs,omitempty"`
 }
 
 type repeatGateResult struct {
@@ -260,7 +265,7 @@ func executeGate(root string, options gateOptions) (gateResult, error) {
 		if options.checkID != "" && item.ID != options.checkID {
 			continue
 		}
-		result.Checks = append(result.Checks, executeCheck(root, item, options.timeout))
+		result.Checks = append(result.Checks, executeCheck(root, item, options.timeout, options.changedPaths))
 	}
 	if len(result.Checks) == 0 {
 		if options.checkID != "" {
@@ -322,9 +327,14 @@ func findGate(gates []gate, id string) (gate, bool) {
 	return gate{}, false
 }
 
-func executeCheck(root string, item check, timeout time.Duration) checkResult {
+func executeCheck(root string, item check, timeout time.Duration, changedPaths []string) checkResult {
 	started := time.Now()
 	result := checkResult{ID: item.ID}
+	if len(item.RequiredWhenChanged) > 0 && len(changedPaths) > 0 && !anyPathMatches(changedPaths, item.RequiredWhenChanged) {
+		result.Status = "skipped"
+		result.Reason = "not applicable: no changed path matches required_when_changed"
+		return result
+	}
 	if item.Deferred {
 		result.Status = "deferred"
 		result.Reason = "deferred check"
@@ -374,6 +384,49 @@ func executeCheck(root string, item check, timeout time.Duration) checkResult {
 	}
 	result.Reason = err.Error()
 	return result
+}
+
+func anyPathMatches(paths, patterns []string) bool {
+	for _, path := range paths {
+		if matchesAny(path, patterns) {
+			return true
+		}
+	}
+	return false
+}
+
+func executeGateRepeated(root string, options gateOptions, repeat int) (gateResult, error) {
+	if repeat < 1 {
+		repeat = 1
+	}
+	if repeat == 1 {
+		return executeGate(root, options)
+	}
+	aggregate := gateResult{Gate: options.gateName, Worktree: root, StartedAt: time.Now().UTC(), Repeat: repeat, Applicable: true, Applicability: "applicable"}
+	for index := 0; index < repeat; index++ {
+		runOptions := options
+		runOptions.repeat = 1
+		result, err := executeGate(root, runOptions)
+		if err != nil {
+			return gateResult{}, err
+		}
+		aggregate.Runs = append(aggregate.Runs, result)
+	}
+	aggregate.FinishedAt = time.Now().UTC()
+	aggregate.Checks = aggregate.Runs[0].Checks
+	aggregate.Status = aggregate.Runs[0].Status
+	for _, run := range aggregate.Runs[1:] {
+		if run.Status != aggregate.Status {
+			aggregate.Flaky = true
+		}
+		if run.Status == "failed" || run.Status == "deferred" {
+			aggregate.Status = run.Status
+		}
+		if run.Status == "manual" && aggregate.Status == "passed" {
+			aggregate.Status = "manual"
+		}
+	}
+	return aggregate, nil
 }
 
 var bearerPattern = regexp.MustCompile(`(?i)(bearer\s+)[^\s]+`)

@@ -117,3 +117,16 @@ func TestGateRepeatReportsConsistencyAndPlatform(t *testing.T) {
 		t.Fatalf("platform applicability was not recorded: %+v", report.Runs[0])
 	}
 }
+
+func TestGateCheckCanBeConditionallySkippedByChangedPaths(t *testing.T) {
+	root := t.TempDir()
+	item := check{ID: "canvas", Run: "exit 1", RequiredWhenChanged: []string{"services/ranger/**"}}
+	result := executeCheck(root, item, time.Second, []string{"docs/readme.md"})
+	if result.Status != "skipped" || !strings.Contains(result.Reason, "required_when_changed") {
+		t.Fatalf("expected conditional skip, got %+v", result)
+	}
+	result = executeCheck(root, item, time.Second, []string{"services/ranger/app.go"})
+	if result.Status != "failed" {
+		t.Fatalf("matching path should run the check, got %+v", result)
+	}
+}

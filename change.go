@@ -32,6 +32,9 @@ func runChangeCommand(args []string) error {
 	if args[0] == "impact" {
 		return runChangeImpactCommand(args[1:])
 	}
+	if args[0] == "jobs" || args[0] == "hold" {
+		return runChangeWorkflowCommand(args)
+	}
 	if args[0] != "validate" {
 		return fmt.Errorf("unknown change operation %q; use 'leadfox change --help' for usage", args[0])
 	}
@@ -252,11 +255,15 @@ const changeHelpText = `Validate a proposed change to an existing project.
 Usage:
   leadfox change validate [PATH] [options]
   leadfox change impact [PATH] [options]
+  leadfox change jobs PATH [--create --yes]
+  leadfox change hold list PATH
+  leadfox change hold release PATH HOLD-ID --by NAME --reason TEXT --yes
 
 PATH is the Markdown change plan to validate. Exit 0 means valid, 1 means
 findings, and 2 means the input could not be processed.
 
 Options:
   --format markdown|json  Select diagnostics format (default markdown)
+  --create --yes          Create draft jobs from PATH's adjacent workflow file
   -h, --help              Show this help message
 `
