@@ -2,20 +2,29 @@
 
 **Plan ID:** LEADFOX-CI-001
 **Version:** 1
-**Status:** implementation-ready; local rehearsal passed
+**Status:** implemented; validation passed
 **Audience:** Leadfox maintainers and Control
 **Scope:** read-only GitHub Actions validation for the Leadfox repository
-**Current head:** `4083e0b`
+**Current head:** `6cbc029`
 **Created:** 2026-11-10
 
 ## Implementation status
 
-The initial workflow implementation is present locally in
-`.github/workflows/ci.yml`. It uses read-only permissions, pinned official
-actions, and runs Go tests, Go vet, npm tests, and release-candidate fixture
-validation. Local actionlint and command rehearsal passed on the uncommitted
-implementation. Temporary-branch validation, main validation, and any future
-release remain pending.
+The workflow is implemented in `.github/workflows/ci.yml`. It uses read-only
+permissions, pinned official actions, and runs Go tests, Go vet, npm tests, and
+release-candidate fixture validation. Local actionlint and command rehearsal
+passed. The temporary pull-request validation, deliberate failure test, main
+push run, and manual run all passed; no release was published.
+
+Validation records:
+
+- Green temporary pull request run: `42849134234`.
+- Deliberate red temporary pull request run: `42849547331`; it failed only at
+  the intentionally incorrect manifest source-commit assertion.
+- Automatic main push run: `42849829843`.
+- Manual `workflow_dispatch` run: `42850051417`.
+- Temporary pull requests 1 and 2 were closed without merge, and both
+  temporary branches were deleted.
 
 ## Purpose
 
