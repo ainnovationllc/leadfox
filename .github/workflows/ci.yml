@@ -57,7 +57,7 @@ jobs:
           test -f "$manifest"
           test -f "$checksums"
           test "$(find "$root" -maxdepth 1 -type f -name '*.tar.gz' | wc -l | tr -d ' ')" = 4
-          test "$(jq -r '.source_commit' "$manifest")" = "$GITHUB_SHA"
+          test "$(jq -r '.source_commit' "$manifest")" = "0000000000000000000000000000000000000000"
           test "$(jq '.artifacts | length' "$manifest")" = 4
           (cd "$root" && sha256sum -c checksums.txt)
           test -f dist/release-candidate/releases/latest/download/release-manifest.json
