@@ -5,7 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 const { spawn } = require('node:child_process');
-const { addPath, doctor, install, platformKey, removePath, rollback, update, validateManifest, sha256 } = require('./install.js');
+const { addPath, doctor, install, isAllowedReleaseRedirect, platformKey, removePath, rollback, update, validateManifest, sha256 } = require('./install.js');
 
 test('maps supported platforms to release keys', () => {
   assert.deepEqual(platformKey('darwin', 'arm64'), { os: 'darwin', arch: 'arm64', key: 'darwin_arm64' });
@@ -14,6 +14,21 @@ test('maps supported platforms to release keys', () => {
 
 test('rejects unsupported platforms', () => {
   assert.throws(() => platformKey('win32', 'x64'), /unsupported platform/);
+});
+
+test('allows only GitHub release asset redirects', () => {
+  assert.equal(isAllowedReleaseRedirect(
+    new URL('https://github.com/ainnovationllc/leadfox/releases/download/v0.2.0-rc.1/release-manifest.json'),
+    new URL('https://release-assets.githubusercontent.com/github-production-release-asset/123/file?sig=redacted'),
+  ), true);
+  assert.equal(isAllowedReleaseRedirect(
+    new URL('https://github.com/ainnovationllc/leadfox/releases/download/v0.2.0-rc.1/release-manifest.json'),
+    new URL('https://example.com/redirected-release-manifest.json'),
+  ), false);
+  assert.equal(isAllowedReleaseRedirect(
+    new URL('http://github.com/ainnovationllc/leadfox/releases/download/v0.2.0-rc.1/release-manifest.json'),
+    new URL('https://release-assets.githubusercontent.com/github-production-release-asset/123/file'),
+  ), false);
 });
 
 test('selects exactly one matching manifest artifact', () => {

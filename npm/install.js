@@ -34,7 +34,18 @@ function releaseURL(baseURL, version, file) {
 }
 
 async function fetchBuffer(url, { maxBytes = 4 * 1024 * 1024 } = {}) {
-  const response = await fetch(url, { redirect: 'error' });
+  let currentURL = new URL(url);
+  let response;
+  for (let redirects = 0; redirects <= 1; redirects += 1) {
+    response = await fetch(currentURL, { redirect: 'manual' });
+    if (response.status < 300 || response.status >= 400) break;
+    const location = response.headers.get('location');
+    if (!location || !isAllowedReleaseRedirect(currentURL, new URL(location, currentURL))) {
+      throw new Error('unexpected release redirect');
+    }
+    currentURL = new URL(location, currentURL);
+    if (redirects === 1) throw new Error('too many release redirects');
+  }
   if (!response.ok) throw new Error(`download failed (${response.status}) for ${url}`);
   const length = response.headers.get('content-length');
   if (length && Number(length) > maxBytes) throw new Error(`download exceeds ${maxBytes} bytes: ${url}`);
@@ -46,6 +57,12 @@ async function fetchBuffer(url, { maxBytes = 4 * 1024 * 1024 } = {}) {
     chunks.push(chunk);
   }
   return Buffer.concat(chunks);
+}
+
+function isAllowedReleaseRedirect(from, to) {
+  return from.protocol === 'https:' && from.hostname === 'github.com'
+    && to.protocol === 'https:' && to.hostname === 'release-assets.githubusercontent.com'
+    && to.pathname.startsWith('/github-production-release-asset/');
 }
 
 function sha256(value) {
@@ -331,4 +348,4 @@ async function doctor(options = {}) {
   return { healthy: findings.length === 0, root, version: manifest.version, platform: manifest.platform?.key, binary: active, path_present: pathPresent, findings };
 }
 
-module.exports = { addPath, doctor, ensureWritableRoot, install, platformKey, removePath, rollback, sha256, update, validateManifest };
+module.exports = { addPath, doctor, ensureWritableRoot, install, isAllowedReleaseRedirect, platformKey, removePath, rollback, sha256, update, validateManifest };
