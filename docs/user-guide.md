@@ -129,6 +129,11 @@ Migration is a dry run by default. It creates only missing managed files,
 records `control/leadfox-migration.yaml`, is idempotent, and does not overwrite
 existing project content. A newer unsupported schema is rejected.
 
+The schema version is the top-level `leadfox_schema` field in
+`control/project.yaml`; a project without it is schema 1. `project.version`
+belongs to the project (for example, its architecture plan revision) and
+Leadfox does not interpret it.
+
 `leadfox doctor` and `leadfox project doctor` are read-only diagnostics for
 project structure, intake, policy, decisions, capabilities, and ready jobs.
 They do not run gates, contact external systems, or modify files.

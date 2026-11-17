@@ -16,7 +16,10 @@ import (
 const decisionsFileName = "control/decisions.yaml"
 
 type projectMetadata struct {
-	Project struct {
+	// LeadfoxSchema is the Leadfox project-format version. Projects created
+	// before the field existed omit it and are version 1.
+	LeadfoxSchema int `yaml:"leadfox_schema"`
+	Project       struct {
 		Name    string `yaml:"name"`
 		Version int    `yaml:"version"`
 	} `yaml:"project"`

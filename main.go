@@ -387,8 +387,13 @@ execution, report progress at each milestone, and report a handoff when
 done. Do not leave a job running without a live worker at the end of a
 session: pause or block it. Progress and handoffs are never approval.
 `,
-		"control/project.yaml": fmt.Sprintf(`project:
+		"control/project.yaml": fmt.Sprintf(`# Leadfox project-format version. Managed by Leadfox; do not change it.
+leadfox_schema: 1
+
+project:
   name: %s
+  # Project model version, owned by this project (for example, to match the
+  # approved architecture plan revision). Leadfox does not interpret it.
   version: 1
   # Optional trailers added to Leadfox-managed commits.
   # commit_trailers:

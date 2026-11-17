@@ -100,7 +100,9 @@ func inspectProjectSchema(root string) (projectSchemaReport, error) {
 	if err := yaml.Unmarshal(content, &metadata); err != nil {
 		return report, fmt.Errorf("parse project metadata: %w", err)
 	}
-	report.Name, report.Current = metadata.Project.Name, metadata.Project.Version
+	// The schema version is leadfox_schema, not project.version: the latter
+	// belongs to the project (for example, its architecture plan revision).
+	report.Name, report.Current = metadata.Project.Name, metadata.LeadfoxSchema
 	if report.Current == 0 {
 		report.Current = 1
 	}
