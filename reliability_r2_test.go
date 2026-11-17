@@ -101,7 +101,7 @@ func TestRuntimeEventsIdempotentAndOrdered(t *testing.T) {
 		runtimeEvent{EventID: "e8", Job: "J", Type: "register", ExecutionID: "a", Seq: 11, At: at(32)},
 	)
 	state = deriveRuntimeState(events, t0.Add(35*time.Minute), thresholds)
-	if state.ExecutionID != "b" || state.Runtime != "codex" || state.Condition != conditionHealthy || len(state.Superseded) != 1 || state.Late != 3 {
+	if state.ExecutionID != "b" || state.Runtime != "codex" || state.Condition != conditionHealthy || len(state.Superseded) != 1 || state.Late != 1 || state.FromReplaced != 2 {
 		t.Fatalf("superseded execution changed state: %+v", state)
 	}
 	// Deterministic: the same events give the same result.

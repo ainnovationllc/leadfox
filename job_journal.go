@@ -222,9 +222,12 @@ func jobProgress(root, id string, o jobOptions) error {
 		if readErr != nil {
 			return readErr
 		}
+		standing, detail := executionStanding(packet, events, executionID)
 		switch {
-		case executionRegistered(events, executionID):
+		case standing == "current":
 			seq = nextExecutionSeq(events, executionID)
+		case standing != "unregistered":
+			return errors.New(stopReportingText(detail))
 		case fromEnvironment:
 			// A stale environment value from another job must not block
 			// progress; record it without an execution instead.
