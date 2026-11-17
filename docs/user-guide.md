@@ -125,9 +125,17 @@ leadfox project migrate /path/to/project
 leadfox project migrate /path/to/project --yes
 ```
 
-Migration is a dry run by default. It creates only missing managed files,
-records `control/leadfox-migration.yaml`, is idempotent, and does not overwrite
-existing project content. A newer unsupported schema is rejected.
+Migration is a dry run by default. It creates missing managed files and
+records `control/leadfox-migration.yaml`; it is idempotent. A newer
+unsupported schema is rejected.
+
+Leadfox-managed documents such as `docs/agent-runtime.md` change between
+releases. Migration updates a copy only when it is byte-for-byte an earlier
+Leadfox version, so it was never edited, and records the update in
+`control/leadfox-migration.yaml`. A locally edited copy is listed as
+modified and never overwritten; compare it with the built-in version
+printed by `leadfox project migrate --print docs/agent-runtime.md`.
+`project check` warns when an unedited copy is outdated.
 
 The schema version is the top-level `leadfox_schema` field in
 `control/project.yaml`; a project without it is schema 1. `project.version`
@@ -629,8 +637,10 @@ agents follow, and `AGENTS.md` tells Control to run `leadfox job check --all`
 at the start of every session. Each new job packet ends with a "Runtime
 reporting" section containing the commands for that job, and
 `leadfox job context JOB-ID` lists them too. For an existing project,
-`leadfox project migrate --yes` adds `docs/agent-runtime.md`; `project check`
-warns until `AGENTS.md` references it. Migration never edits `AGENTS.md`.
+`leadfox project migrate --yes` adds `docs/agent-runtime.md`, and later
+updates it when a new Leadfox release changes the protocol and the copy was
+not edited; `project check` warns until `AGENTS.md` references it.
+Migration never edits `AGENTS.md`.
 
 ### Progress and runtime events
 

@@ -165,7 +165,7 @@ func TestMigrateAddsRuntimeProtocolAndCheckWarns(t *testing.T) {
 		t.Fatal("old agent instructions must be a warning, not an invalid project")
 	}
 
-	created, err := applyProjectMigration(root, report)
+	created, _, err := applyProjectMigration(root, report)
 	if err != nil || !containsProjectString(created, agentRuntimeProtocolPath) {
 		t.Fatalf("migration did not create the protocol: %v %v", created, err)
 	}

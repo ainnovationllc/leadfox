@@ -82,7 +82,7 @@ leadfox init <name>             Create a project skeleton
 leadfox project check           Check initialized project structure
 leadfox project status          Summarize project readiness and activity
 leadfox project schema PATH     Inspect project schema compatibility
-leadfox project migrate PATH    Create missing managed files safely
+leadfox project migrate PATH    Create missing and update unedited managed files
 leadfox project adopt PATH     Add missing structure to an existing project
 leadfox doctor                  Diagnose the current project
 leadfox ops <operation>         Protect and inspect durable operations state

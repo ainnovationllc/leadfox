@@ -168,6 +168,7 @@ func checkProject(root string) (projectCheckReport, error) {
 	if content, err := os.ReadFile(filepath.Join(root, "AGENTS.md")); err == nil && !strings.Contains(string(content), agentRuntimeProtocolPath) {
 		report.Warnings = append(report.Warnings, "AGENTS.md does not reference "+agentRuntimeProtocolPath+"; add a section telling Control to run leadfox job check --all at the start of each session and to follow that protocol (leadfox project migrate creates the document)")
 	}
+	report.Warnings = append(report.Warnings, outdatedManagedWarnings(root)...)
 	worktreeInvalid, worktreeWarningsList := checkWorktreeSettings(root)
 	report.Invalid = append(report.Invalid, worktreeInvalid...)
 	report.Warnings = append(report.Warnings, worktreeWarningsList...)
@@ -334,9 +335,15 @@ Usage:
 
 Options:
   --format markdown|json  Select report format (default markdown)
-  --yes                   Apply adoption; otherwise show a dry-run
+  --yes                   Apply adoption or migration; otherwise show a dry-run
+  --print PATH            Migrate: print the built-in version of a managed
+                          document (for example docs/agent-runtime.md)
   -h, --help              Show this help message
 
 Adoption never overwrites or deletes existing paths. It creates only missing
 Leadfox structure and records the created paths in control/leadfox-adoption.yaml.
+
+Migration creates missing managed files and updates managed documents that
+are unmodified copies of an earlier Leadfox version. Locally edited copies
+are reported and never overwritten.
 `
