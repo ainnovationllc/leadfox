@@ -308,6 +308,27 @@ items as delivered.
 - `job start` accepts `--actor` (default `Control`) so an override records
   who approved it.
 
+### R1 implementation notes
+
+- `job pause` was moved from REL-08 into R1 so that the R1 checkpoint can
+  distinguish pause from blockage and cancellation. `job resume` now accepts
+  `paused`, `blocked`, `worker-lost` and `timed-out`; a missing worktree is
+  refused with the branch name and the `reissue --from-branch` remedy.
+- The transition table (`job_states.go`) now guards start, pause, block,
+  cancel, resume, sync, review, approve, attest, evidence, merge and
+  progress. **Behaviour change:** `job review` previously had no status
+  check; it is now refused for `draft`, `ready`, `merged` and `cancelled`
+  jobs. It remains allowed after an interruption so Control can review
+  recovered work directly.
+- `job approve` and `job merge` now append lifecycle transitions; previously
+  they changed status without a transition record.
+- Journal records use a typed `progress` object rather than the generic
+  `data` field sketched in D7; R2 adds typed fields for runtime events.
+- Older projects whose `.gitignore` lacks `.local/` are not migrated
+  automatically; `job progress` refuses to write and names the fix.
+- `worker-lost` and `timed-out` are defined, displayed and resumable, but
+  are only entered by `job check` and runtime events in R2.
+
 ## 5. Interruption test matrix
 
 All tests use temporary Git repositories, as existing lifecycle tests do,

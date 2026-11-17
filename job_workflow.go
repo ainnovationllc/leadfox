@@ -16,6 +16,7 @@ import (
 type jobStatusReport struct {
 	Job           string               `json:"job"`
 	Status        string               `json:"status"`
+	Meaning       string               `json:"status_meaning"`
 	Role          string               `json:"role"`
 	Objective     string               `json:"objective"`
 	BaseBranch    string               `json:"base_branch,omitempty"`
@@ -32,6 +33,7 @@ type jobStatusReport struct {
 	Blockers      []string             `json:"blockers,omitempty"`
 	Warnings      []string             `json:"warnings,omitempty"`
 	Recovery      string               `json:"recovery,omitempty"`
+	Activity      *jobStatusActivity   `json:"activity,omitempty"`
 	NextAction    string               `json:"next_action"`
 	UpdatedAt     string               `json:"updated_at,omitempty"`
 }
@@ -75,7 +77,7 @@ func jobStatus(root, id, format string) error {
 		fmt.Println(string(encoded))
 		return nil
 	}
-	fmt.Printf("Job %s: %s\nRole: %s\nObjective: %s\n", report.Job, report.Status, report.Role, report.Objective)
+	fmt.Printf("Job %s: %s (%s)\nRole: %s\nObjective: %s\n", report.Job, report.Status, report.Meaning, report.Role, report.Objective)
 	if report.BaseBranch != "" {
 		fmt.Printf("Base: %s %s\n", report.BaseBranch, report.BaseCommit)
 	}
@@ -106,6 +108,13 @@ func jobStatus(root, id, format string) error {
 	}
 	if report.Recovery != "" {
 		fmt.Println("Recovery:", report.Recovery)
+	}
+	if report.Activity != nil {
+		fmt.Println("Activity:", report.Activity.Summary)
+		printProgressFields(report.Activity.LastProgress, "  ")
+		if report.Activity.MalformedLines > 0 {
+			fmt.Printf("  Warning: %d malformed journal line(s) skipped\n", report.Activity.MalformedLines)
+		}
 	}
 	if len(report.Warnings) > 0 {
 		fmt.Println("Warnings:")
@@ -176,7 +185,12 @@ func buildJobStatus(root string, packet jobPacket) jobStatusReport {
 			report.Blockers = append(report.Blockers, "required artifact "+artifact.ID+" is not retained")
 		}
 	}
+	report.Meaning = jobStateMeaning(packet.Status)
+	if last, ok := lastTransitionTo(packet, packet.Status); ok && (packet.Status == statePaused || packet.Status == stateBlocked || isInterruptedJobStatus(packet.Status)) {
+		report.Meaning += fmt.Sprintf(" — %s by %s at %s", last.Reason, last.Actor, last.RecordedAt)
+	}
 	report.Warnings = worktreeWarnings(packet)
+	report.Activity = buildJobActivity(root, packet)
 	if packet.Status == "cancelled" {
 		report.Recovery = recoveryDescription(root, packet)
 	}
@@ -192,26 +206,20 @@ func buildJobStatus(root string, packet jobPacket) jobStatusReport {
 }
 
 func nextJobAction(packet jobPacket, blockers []string) string {
-	switch packet.Status {
-	case "draft":
-		return "complete the packet and mark it ready"
-	case "ready":
-		return "start the approved job"
-	case "running":
-		return "complete the work and return a handoff"
-	case "review", "review-pending", "review-failed", "changes-requested":
-		return "resolve review findings or record required attestations"
-	case "accepted":
-		return "merge the accepted job"
-	case "merged":
-		return "no further lifecycle action"
-	case "blocked":
-		return "resolve the blocker and resume or reissue the job"
-	case "cancelled":
-		return "no further lifecycle action"
-	default:
-		return "inspect the job and resolve its blockers"
+	if info, ok := jobStates[packet.Status]; ok {
+		return info.NextAction
 	}
+	return "inspect the job and resolve its blockers"
+}
+
+// lastTransitionTo returns the most recent recorded transition into status.
+func lastTransitionTo(packet jobPacket, status string) (jobTransition, bool) {
+	for index := len(packet.Transitions) - 1; index >= 0; index-- {
+		if packet.Transitions[index].To == status {
+			return packet.Transitions[index], true
+		}
+	}
+	return jobTransition{}, false
 }
 
 func jobHandoffDraft(root, id string) error {

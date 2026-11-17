@@ -210,20 +210,12 @@ func worktreeWarnings(packet jobPacket) []string {
 			warnings = append(warnings, fmt.Sprintf("worktree %s is in volatile location %s and may be cleared by the host", packet.Worktree, location))
 		}
 	}
-	if packet.Worktree != "" && isActiveJobStatus(packet.Status) {
+	if packet.Worktree != "" && isStartedJobStatus(packet.Status) && !isTerminalJobStatus(packet.Status) {
 		if _, err := os.Stat(packet.Worktree); errors.Is(err, os.ErrNotExist) {
 			warnings = append(warnings, fmt.Sprintf("worktree %s is missing; work committed to branch %s is preserved", packet.Worktree, packet.Branch))
 		}
 	}
 	return warnings
-}
-
-func isActiveJobStatus(status string) bool {
-	switch status {
-	case "running", "blocked", "review", "review-pending", "review-failed", "changes-requested", "accepted":
-		return true
-	}
-	return false
 }
 
 // checkWorktreeSettings validates the optional project worktree policy for
