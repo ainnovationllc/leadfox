@@ -197,6 +197,15 @@ func buildProjectStatus(root string) (projectStatusReport, error) {
 				continue
 			}
 			report.Jobs = append(report.Jobs, projectJobSummary{ID: packet.ID, Status: packet.Status, Role: packet.Role})
+			if packet.Status == stateRunning {
+				if assessment, assessErr := assessJob(root, packet, nowFunc()); assessErr == nil {
+					if text := assessment.attentionText(); text != "" {
+						report.Warnings = append(report.Warnings, fmt.Sprintf("job %s: %s", packet.ID, text))
+					}
+				}
+			} else if isInterruptedJobStatus(packet.Status) {
+				report.Warnings = append(report.Warnings, fmt.Sprintf("job %s is %s; resume or reissue it from the preserved work", packet.ID, packet.Status))
+			}
 			report.JobStats[packet.Status]++
 		}
 	}

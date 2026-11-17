@@ -91,6 +91,9 @@ var jobOperations = map[string]jobOperationRule{
 	"attest":   {From: reviewStates},
 	"evidence": {From: reviewStates},
 	"merge":    {From: []string{stateAccepted}, To: stateMerged},
+	// Recorded only by job check from runtime evidence or the job timeout.
+	"lose":     {From: []string{stateRunning}, To: stateWorkerLost},
+	"time-out": {From: []string{stateRunning}, To: stateTimedOut},
 	"progress": {From: []string{stateRunning, statePaused, stateBlocked, stateWorkerLost, stateTimedOut, stateReview, stateReviewPending, stateReviewFailed, stateChangesRequested}},
 }
 

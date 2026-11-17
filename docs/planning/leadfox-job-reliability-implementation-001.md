@@ -329,6 +329,32 @@ items as delivered.
 - `worker-lost` and `timed-out` are defined, displayed and resumable, but
   are only entered by `job check` and runtime events in R2.
 
+### R2 implementation notes
+
+- Runtime events (`job runtime register|heartbeat|event|show`) only append
+  to the journal; they never change the job packet. Control records
+  `worker-lost` and `timed-out` with `job check`, which writes an
+  `interruptions` entry (reason, execution, runtime, last event, last
+  commit, recovery action) and commits it. `job check` refuses to commit
+  when the Control checkout has unrelated staged changes.
+- The event boundary is the CLI rather than `ManualRuntime`; any host
+  (including Herdr later) can report events without Go integration.
+  `ManualRuntime` is unchanged.
+- An `exit` without a prior `handoff` is treated as worker loss even with
+  exit code 0, because a successful exit is not a handoff and never implies
+  approval. A `handoff` produces a completion notice and no state change.
+- An execution named in a recorded interruption is closed: its later events
+  are not re-evaluated, so a resumed job is not immediately marked lost
+  again. Timeouts are measured from the most recent transition to
+  `running`, so they restart on resume.
+- Stale-worker and handoff notices are recorded with a key in the journal
+  and emitted once per condition. Notices are also emitted for start,
+  block, pause, cancel, worker loss, timeout and recovery readiness.
+  Reasons that match credential patterns are withheld.
+- **Output change:** `job list` gains a fifth `ATTENTION` column.
+- `project status` and `doctor` report running jobs that `job check` would
+  change, stale workers, and interrupted jobs as warnings.
+
 ## 5. Interruption test matrix
 
 All tests use temporary Git repositories, as existing lifecycle tests do,

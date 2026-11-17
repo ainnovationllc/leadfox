@@ -26,18 +26,23 @@ const (
 )
 
 type runtimeEvent struct {
-	Schema      int           `json:"schema"`
-	EventID     string        `json:"event_id"`
-	ExecutionID string        `json:"execution_id,omitempty"`
-	Seq         int64         `json:"seq,omitempty"`
-	Job         string        `json:"job"`
-	Type        string        `json:"type"`
-	At          string        `json:"at"`
-	Actor       string        `json:"actor,omitempty"`
-	Branch      string        `json:"branch,omitempty"`
-	Commit      string        `json:"commit,omitempty"`
-	Worktree    string        `json:"worktree,omitempty"`
-	Progress    *progressData `json:"progress,omitempty"`
+	Schema       int              `json:"schema"`
+	EventID      string           `json:"event_id"`
+	ExecutionID  string           `json:"execution_id,omitempty"`
+	Seq          int64            `json:"seq,omitempty"`
+	Job          string           `json:"job"`
+	Type         string           `json:"type"`
+	At           string           `json:"at"`
+	Actor        string           `json:"actor,omitempty"`
+	Branch       string           `json:"branch,omitempty"`
+	Commit       string           `json:"commit,omitempty"`
+	Worktree     string           `json:"worktree,omitempty"`
+	Progress     *progressData    `json:"progress,omitempty"`
+	Runtime      string           `json:"runtime,omitempty"`
+	Note         string           `json:"note,omitempty"`
+	ExitCode     *int             `json:"exit_code,omitempty"`
+	OutputRef    string           `json:"output_ref,omitempty"`
+	Notification *jobNotification `json:"notification,omitempty"`
 }
 
 type progressData struct {
