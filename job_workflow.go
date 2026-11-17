@@ -225,6 +225,9 @@ func buildJobStatus(root string, packet jobPacket) jobStatusReport {
 	if packet.Status == "cancelled" {
 		report.Recovery = recoveryDescription(root, packet)
 	}
+	if packet.PrunedBranch != nil && report.Recovery == "" {
+		report.Recovery = prunedBranchHint(packet)
+	}
 	report.NextAction = nextJobAction(packet, report.Blockers)
 	if report.Interruption != nil {
 		report.NextAction = report.Interruption.RecoveryAction

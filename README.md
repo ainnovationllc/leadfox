@@ -130,6 +130,7 @@ leadfox job progress JOB-ID     Record or show worker progress (not evidence)
 leadfox job runtime <op> ID     Report execution-host events for a running job
 leadfox job check --all         Record worker loss and timeouts from runtime events
 leadfox job recover JOB-ID      Recreate a lost worktree from the job branch
+leadfox job prune               Delete merged and cancelled job branches safely
 leadfox capability <operation> Inspect agent-host capabilities
 leadfox policy <operation>     Validate or inspect Control authority policy
 leadfox risk <operation>       Validate or inspect project-defined risk controls

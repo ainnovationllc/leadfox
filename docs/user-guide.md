@@ -634,7 +634,8 @@ saves uncommitted tracked and untracked files as a commit under
 `refs/leadfox/recovery/<job>/<n>` without touching the worktree, and records
 a recovery point. If the save fails, nothing is cancelled. Use
 `--discard-uncommitted` to cancel without it; the choice is recorded.
-Leadfox never deletes job branches or recovery refs.
+Leadfox never deletes recovery refs. It deletes job branches only when you
+run `job prune` (see "Pruning old job branches" below).
 
 ```sh
 # Recreate a missing worktree from the branch, restore saved uncommitted
@@ -650,6 +651,25 @@ leadfox job reissue JOB-001 JOB-002 --actor Control --reason "new worker" --from
 Recovery and reissue never approve, merge, push or deploy. A reissued job
 starts from the preserved work and is scope-checked from its start record,
 so carried-over commits are still checked.
+
+### Pruning old job branches
+
+Merge keeps the job branch, so branches accumulate. `job prune` deletes
+branches of merged and cancelled (including superseded) jobs, and shows a
+dry run unless you pass `--yes`:
+
+```sh
+leadfox job prune                       # preview merged and cancelled jobs
+leadfox job prune --merged --older-than 30d --yes
+```
+
+A branch is deleted only when its head commit is contained in the job's
+base branch or in one of its recovery refs. Otherwise Leadfox first saves
+the head as a new recovery ref, so no work becomes unreachable. Branches
+checked out in a worktree are kept. Each job record keeps a
+`pruned_branch` entry with the branch name, head commit and what preserves
+it, and `job status` reports it. To continue a pruned cancelled job, use
+`leadfox job reissue OLD NEW --from-recovery latest`.
 
 ### Agent instructions
 

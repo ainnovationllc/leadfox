@@ -44,6 +44,7 @@ Usage:
   leadfox job progress <id> --show [--format json]
   leadfox job runtime register|heartbeat|event|show <id> [options]
   leadfox job check <id>... | --all
+  leadfox job prune [--merged] [--cancelled] [--older-than AGE] [--yes]
   leadfox job list
   leadfox job merge <id>
   leadfox job retain <id> --artifact-id ID --actor NAME
@@ -100,7 +101,8 @@ checks scope, runs required gates, and records evidence before approval.
 Job start uses the packet's worktree, --worktree, or the persistent root in
 control/settings/worktrees.yaml. Volatile locations such as /tmp are refused.
 Cancel and reissue snapshot uncommitted work to refs/leadfox/recovery/<id>/<n>
-before removing a worktree; Leadfox never deletes job branches or recovery refs.
+before removing a worktree. Leadfox never deletes recovery refs, and deletes
+job branches only through job prune, after their work is preserved elsewhere.
 
 Progress records go to .local/leadfox/runtime/<id>.jsonl in the Control
 checkout (never committed) and may be written from the job worktree. They are
@@ -156,6 +158,7 @@ type jobPacket struct {
 	Supersedes         string                `yaml:"supersedes,omitempty"`
 	SupersededBy       string                `yaml:"superseded_by,omitempty"`
 	RecoveryPoints     []jobRecoveryPoint    `yaml:"recovery_points,omitempty"`
+	PrunedBranch       *jobPrunedBranch      `yaml:"pruned_branch,omitempty"`
 	Timeout            string                `yaml:"timeout,omitempty"`
 	Interruptions      []jobInterruption     `yaml:"interruptions,omitempty"`
 	ScopeAmendments    []jobScopeAmendment   `yaml:"scope_amendments,omitempty"`
@@ -328,6 +331,8 @@ type jobOptions struct {
 	allowVolatile, discardUncommitted, fromBranch            bool
 	fromRecovery, remaining, next, blocker                   string
 	show, all                                                bool
+	pruneMerged, pruneCancelled, yes                         bool
+	olderThan                                                string
 	runtime, executionID, eventID, eventType, outputRef      string
 	seq                                                      int64
 	exitCode                                                 int
@@ -391,6 +396,27 @@ func runJobCommand(args []string) error {
 			return err
 		}
 		return jobRuntimeCommand(root, args[1], id, options)
+	}
+	if operation == "prune" {
+		options, id, err := parseJobOptions(args[1:])
+		if err != nil {
+			return err
+		}
+		if options.showHelp {
+			fmt.Print(jobPruneHelpText)
+			return nil
+		}
+		if id != "" {
+			return errors.New("job prune takes no job ID; use --merged, --cancelled or --older-than to select jobs")
+		}
+		if err := validateJobOptions(operation, options); err != nil {
+			return err
+		}
+		root, err := gitRoot(".")
+		if err != nil {
+			return err
+		}
+		return jobPrune(root, options)
 	}
 	if operation == "check" {
 		var ids []string
@@ -863,6 +889,22 @@ func parseJobOptions(args []string) (jobOptions, string, error) {
 		case "--from-branch":
 			o.used["from-branch"] = true
 			o.fromBranch = true
+		case "--merged":
+			o.used["merged"] = true
+			o.pruneMerged = true
+		case "--cancelled":
+			o.used["cancelled"] = true
+			o.pruneCancelled = true
+		case "--yes":
+			o.used["yes"] = true
+			o.yes = true
+		case "--older-than":
+			o.used["older-than"] = true
+			v, n, e := requiredOptionValue(args, i, arg)
+			if e != nil {
+				return o, id, e
+			}
+			o.olderThan, i = v, n
 		case "--from-recovery":
 			o.used["from-recovery"] = true
 			v, n, e := requiredOptionValue(args, i, arg)
@@ -957,6 +999,7 @@ func validateJobOptions(operation string, o jobOptions) error {
 		"progress":  {"remaining": true, "next": true, "blocker": true, "gate": true, "actor": true, "show": true, "format": true, "execution-id": true},
 		"runtime":   {"runtime": true, "execution-id": true, "event-id": true, "type": true, "output-ref": true, "seq": true, "exit-code": true, "note": true, "actor": true, "format": true},
 		"check":     {"all": true},
+		"prune":     {"merged": true, "cancelled": true, "older-than": true, "actor": true, "yes": true},
 		"reissue":   {"reason": true, "actor": true, "discard-uncommitted": true, "from-branch": true, "from-recovery": true},
 		"list":      {},
 		"merge":     {},
