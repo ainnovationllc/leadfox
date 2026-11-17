@@ -648,6 +648,11 @@ leadfox job runtime event JOB-001 --execution-id run-42 --type exit --exit-code 
 leadfox job runtime show JOB-001
 ```
 
+`runtime show` lists runtime events and notifications. It counts progress
+updates without listing them; `job progress <id> --show` lists those. For a
+merged or cancelled job it reports the last execution as ended instead of a
+live condition.
+
 `runtime register` prints an `export LEADFOX_EXECUTION_ID=…` line. With
 that variable set (or `--execution-id`), later commands need no execution
 flag, and `job progress` also counts as a heartbeat. A value that is not
