@@ -112,7 +112,7 @@ func inspectProjectSchema(root string) (projectSchemaReport, error) {
 	default:
 		report.Status = "current"
 	}
-	for _, path := range []string{"control/decisions.yaml"} {
+	for _, path := range []string{"control/decisions.yaml", agentRuntimeProtocolPath} {
 		if _, statErr := os.Stat(filepath.Join(root, path)); errors.Is(statErr, os.ErrNotExist) {
 			report.MissingManaged = append(report.MissingManaged, path)
 		} else if statErr != nil {

@@ -165,6 +165,9 @@ func checkProject(root string) (projectCheckReport, error) {
 	} else if !containsProjectString(report.Missing, "control/project-intake.md") {
 		report.Invalid = append(report.Invalid, intakeErr.Error())
 	}
+	if content, err := os.ReadFile(filepath.Join(root, "AGENTS.md")); err == nil && !strings.Contains(string(content), agentRuntimeProtocolPath) {
+		report.Warnings = append(report.Warnings, "AGENTS.md does not reference "+agentRuntimeProtocolPath+"; add a section telling Control to run leadfox job check --all at the start of each session and to follow that protocol (leadfox project migrate creates the document)")
+	}
 	worktreeInvalid, worktreeWarningsList := checkWorktreeSettings(root)
 	report.Invalid = append(report.Invalid, worktreeInvalid...)
 	report.Warnings = append(report.Warnings, worktreeWarningsList...)

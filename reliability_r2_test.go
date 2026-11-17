@@ -351,7 +351,7 @@ func TestRuntimeEventValidation(t *testing.T) {
 		want   string
 	}{
 		{"unregistered", "heartbeat", jobOptions{executionID: "exec-9"}, "not registered"},
-		{"missing execution", "heartbeat", jobOptions{}, "--execution-id is required"},
+		{"missing execution", "heartbeat", jobOptions{}, "--execution-id (or LEADFOX_EXECUTION_ID) is required"},
 		{"exit without code", "event", jobOptions{executionID: "exec-1", eventType: "exit"}, "--exit-code is required"},
 		{"bad type", "event", jobOptions{executionID: "exec-1", eventType: "approve"}, "--type must be"},
 		{"output text", "event", jobOptions{executionID: "exec-1", eventType: "output-ref", outputRef: "line one\nline two"}, "single path or URL"},

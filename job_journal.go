@@ -212,17 +212,41 @@ func jobProgress(root, id string, o jobOptions) error {
 	if actor == "" {
 		actor = lifecycleActor()
 	}
+	executionID, fromEnvironment := o.executionID, false
+	if executionID == "" {
+		executionID, fromEnvironment = strings.TrimSpace(os.Getenv(executionIDEnv)), true
+	}
+	var seq int64
+	if executionID != "" {
+		events, _, readErr := readJournal(root, id)
+		if readErr != nil {
+			return readErr
+		}
+		switch {
+		case executionRegistered(events, executionID):
+			seq = nextExecutionSeq(events, executionID)
+		case fromEnvironment:
+			// A stale environment value from another job must not block
+			// progress; record it without an execution instead.
+			fmt.Fprintf(os.Stderr, "warning: %s=%s is not registered for %s; progress recorded without an execution\n", executionIDEnv, executionID, id)
+			executionID = ""
+		default:
+			return fmt.Errorf("execution %s is not registered for %s", executionID, id)
+		}
+	}
 	event := runtimeEvent{
-		Schema:   journalSchemaVersion,
-		EventID:  eventID,
-		Job:      id,
-		Type:     "progress",
-		At:       time.Now().UTC().Format(time.RFC3339),
-		Actor:    actor,
-		Branch:   packet.Branch,
-		Commit:   currentJobCommit(root, packet),
-		Worktree: packet.Worktree,
-		Progress: &progressData{Remaining: o.remaining, Next: o.next, Blocker: o.blocker, Gates: o.gates},
+		Schema:      journalSchemaVersion,
+		EventID:     eventID,
+		Job:         id,
+		Type:        "progress",
+		ExecutionID: executionID,
+		Seq:         seq,
+		At:          time.Now().UTC().Format(time.RFC3339),
+		Actor:       actor,
+		Branch:      packet.Branch,
+		Commit:      currentJobCommit(root, packet),
+		Worktree:    packet.Worktree,
+		Progress:    &progressData{Remaining: o.remaining, Next: o.next, Blocker: o.blocker, Gates: o.gates},
 	}
 	if err := appendJournalEvent(root, event); err != nil {
 		return err

@@ -617,6 +617,16 @@ Recovery and reissue never approve, merge, push or deploy. A reissued job
 starts from the preserved work and is scope-checked from its start record,
 so carried-over commits are still checked.
 
+### Agent instructions
+
+`leadfox init` writes `docs/agent-runtime.md`, the protocol Control and job
+agents follow, and `AGENTS.md` tells Control to run `leadfox job check --all`
+at the start of every session. Each new job packet ends with a "Runtime
+reporting" section containing the commands for that job, and
+`leadfox job context JOB-ID` lists them too. For an existing project,
+`leadfox project migrate --yes` adds `docs/agent-runtime.md`; `project check`
+warns until `AGENTS.md` references it. Migration never edits `AGENTS.md`.
+
 ### Progress and runtime events
 
 Workers and hosts write to an uncommitted journal,
@@ -632,6 +642,12 @@ leadfox job runtime event JOB-001 --execution-id run-42 --type handoff
 leadfox job runtime event JOB-001 --execution-id run-42 --type exit --exit-code 0
 leadfox job runtime show JOB-001
 ```
+
+`runtime register` prints an `export LEADFOX_EXECUTION_ID=…` line. With
+that variable set (or `--execution-id`), later commands need no execution
+flag, and `job progress` also counts as a heartbeat. A value that is not
+registered for the job is ignored by `job progress` (with a warning) and
+refused by `job runtime`.
 
 Text that looks like a credential, and text over 1,000 characters, is
 refused. Output is referenced by path or URL (`--type output-ref`), never
