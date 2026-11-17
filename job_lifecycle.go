@@ -37,7 +37,10 @@ Usage:
   leadfox job evidence <id> --criterion ID --provider NAME --run-id ID --commit SHA --conclusion success|failure [options]
   leadfox job cancel <id> --reason TEXT [--discard-uncommitted]
   leadfox job block <id> --reason TEXT
-  leadfox job resume <id> [--reason TEXT]
+  leadfox job pause <id> --actor NAME --reason TEXT
+  leadfox job resume <id> --actor NAME [--reason TEXT]
+  leadfox job progress <id> [--remaining TEXT] [--next TEXT] [--blocker TEXT] [--gate ID]
+  leadfox job progress <id> --show [--format json]
   leadfox job list
   leadfox job merge <id>
   leadfox job retain <id> --artifact-id ID --actor NAME
@@ -82,6 +85,10 @@ Options:
       --from-branch       Reissue starting from the superseded job's branch head
       --from-recovery REF Reissue starting from a recorded recovery point (or "latest")
       --format FORMAT     Markdown or JSON output where supported
+      --remaining TEXT    Progress: work still to do
+      --next TEXT         Progress: next action
+      --blocker TEXT      Progress: current blocker
+      --show              Progress: list recorded progress
   -h, --help              Show this help message
 
 Review creates a clean detached worktree, resolves commits to full IDs,
@@ -91,6 +98,10 @@ Job start uses the packet's worktree, --worktree, or the persistent root in
 control/settings/worktrees.yaml. Volatile locations such as /tmp are refused.
 Cancel and reissue snapshot uncommitted work to refs/leadfox/recovery/<id>/<n>
 before removing a worktree; Leadfox never deletes job branches or recovery refs.
+
+Progress records go to .local/leadfox/runtime/<id>.jsonl in the Control
+checkout (never committed) and may be written from the job worktree. They are
+informational only: review, approval and merge never read them.
 `
 
 const evidenceSchemaVersion = 2
@@ -310,7 +321,8 @@ type jobOptions struct {
 	repeat                                                   int
 	diagnostic                                               bool
 	allowVolatile, discardUncommitted, fromBranch            bool
-	fromRecovery                                             string
+	fromRecovery, remaining, next, blocker                   string
+	show                                                     bool
 	artifacts                                                []string
 	allow, exclude, gates, setup, capabilities, risks        []string
 	showHelp                                                 bool
@@ -350,6 +362,29 @@ func runJobCommand(args []string) error {
 			return err
 		}
 		return jobStatus(root, id, format)
+	}
+	if operation == "progress" {
+		options, id, err := parseJobOptions(args[1:])
+		if err != nil {
+			return err
+		}
+		if options.showHelp {
+			fmt.Println("Usage: leadfox job progress <id> [--remaining TEXT] [--next TEXT] [--blocker TEXT] [--gate ID]... [--actor NAME]\n       leadfox job progress <id> --show [--format markdown|json]")
+			return nil
+		}
+		if id == "" {
+			return errors.New("a job ID is required")
+		}
+		if err := validateJobOptions(operation, options); err != nil {
+			return err
+		}
+		// Progress may be recorded from a job worktree; it always goes to
+		// the Control checkout's journal and packet.
+		root, err := controlRoot(".")
+		if err != nil {
+			return err
+		}
+		return jobProgress(root, id, options)
 	}
 	if operation == "handoff" && len(args) > 1 && args[1] == "draft" {
 		options, id, err := parseJobOptions(args[2:])
@@ -455,6 +490,8 @@ func runJobCommand(args []string) error {
 		return jobTerminate(root, id, "blocked", options)
 	case "resume":
 		return jobResume(root, id, options)
+	case "pause":
+		return jobPause(root, id, options)
 	case "reissue":
 		return errors.New("job reissue requires an old and new job ID")
 	case "list":
@@ -691,6 +728,25 @@ func parseJobOptions(args []string) (jobOptions, string, error) {
 		case "--discard-uncommitted":
 			o.used["discard-uncommitted"] = true
 			o.discardUncommitted = true
+		case "--remaining", "--next", "--blocker":
+			key := strings.TrimPrefix(arg, "--")
+			o.used[key] = true
+			v, n, e := requiredOptionValue(args, i, arg)
+			if e != nil {
+				return o, id, e
+			}
+			switch key {
+			case "remaining":
+				o.remaining = v
+			case "next":
+				o.next = v
+			default:
+				o.blocker = v
+			}
+			i = n
+		case "--show":
+			o.used["show"] = true
+			o.show = true
 		case "--from-branch":
 			o.used["from-branch"] = true
 			o.fromBranch = true
@@ -783,6 +839,8 @@ func validateJobOptions(operation string, o jobOptions) error {
 		"cancel":    {"reason": true, "actor": true, "approved-by": true, "discard-uncommitted": true},
 		"block":     {"reason": true, "actor": true, "approved-by": true},
 		"resume":    {"reason": true, "actor": true},
+		"pause":     {"reason": true, "actor": true},
+		"progress":  {"remaining": true, "next": true, "blocker": true, "gate": true, "actor": true, "show": true, "format": true},
 		"reissue":   {"reason": true, "actor": true, "discard-uncommitted": true, "from-branch": true, "from-recovery": true},
 		"list":      {},
 		"merge":     {},
@@ -969,8 +1027,8 @@ func jobStart(root, id string, o jobOptions) error {
 	if err := validateJobRisks(root, packet.RiskControls); err != nil {
 		return err
 	}
-	if packet.Status != "ready" {
-		return fmt.Errorf("job %s is %q; set it to ready after Control approval", id, packet.Status)
+	if err := checkJobOperation(id, "start", packet.Status); err != nil {
+		return err
 	}
 	if err := ensureJobHoldReleased(root, packet); err != nil {
 		return err
@@ -1133,8 +1191,8 @@ func jobSync(root, id string, o jobOptions) error {
 	if err != nil {
 		return err
 	}
-	if packet.Status != "running" && packet.Status != "blocked" {
-		return fmt.Errorf("job %s is %q; only running or blocked jobs may sync", id, packet.Status)
+	if err := checkJobOperation(id, "sync", packet.Status); err != nil {
+		return err
 	}
 	if packet.Branch == "" || packet.Worktree == "" {
 		return errors.New("job has no branch or worktree to synchronize")
@@ -1637,6 +1695,9 @@ func jobReview(root, id string, o jobOptions) error {
 	if err := validateJobRisks(root, packet.RiskControls); err != nil {
 		return err
 	}
+	if err := checkJobOperation(id, "review", packet.Status); err != nil {
+		return err
+	}
 	if packet.Status == "accepted" && o.reason == "" {
 		return errors.New("--reason is required to re-review an accepted job")
 	}
@@ -1839,8 +1900,8 @@ func jobEvidence(root, id string, o jobOptions) error {
 	if len(packet.AcceptanceCriteria) == 0 {
 		return errors.New("job declares no acceptance criteria")
 	}
-	if packet.Status != "review" && packet.Status != "review-pending" && packet.Status != "review-failed" {
-		return fmt.Errorf("job %s is %q; external evidence requires a review result", id, packet.Status)
+	if err := checkJobOperation(id, "evidence", packet.Status); err != nil {
+		return fmt.Errorf("%w; external evidence requires a review result", err)
 	}
 	if o.criterion == "" || o.provider == "" || o.runID == "" || o.commit == "" || o.conclusion == "" || o.actor == "" {
 		return errors.New("--criterion, --provider, --run-id, --commit, --conclusion, and --actor are required")
@@ -1911,8 +1972,8 @@ func jobApprove(root, id string, o jobOptions) error {
 	if err != nil {
 		return err
 	}
-	if packet.Status != "review" && packet.Status != "review-pending" && packet.Status != "review-failed" {
-		return fmt.Errorf("job %s is %q; create a review worktree first", id, packet.Status)
+	if err := checkJobOperation(id, "approve", packet.Status); err != nil {
+		return fmt.Errorf("%w; create a review worktree first", err)
 	}
 	if o.verdict != "accepted" && o.verdict != "changes-requested" {
 		return errors.New("--verdict must be accepted or changes-requested")
@@ -2006,6 +2067,7 @@ func jobApprove(root, id string, o jobOptions) error {
 	if err := os.WriteFile(path, []byte(record.String()), 0o644); err != nil {
 		return err
 	}
+	appendTransition(&packet, o.verdict, "approval verdict", actor, now)
 	packet.Status, packet.ApprovedBy, packet.ApprovedAt, packet.UpdatedAt = o.verdict, actor, now, now
 	if len(packet.ReviewRounds) > 0 {
 		last := &packet.ReviewRounds[len(packet.ReviewRounds)-1]
@@ -2129,8 +2191,8 @@ func jobAttest(root, id string, o jobOptions) error {
 	if err != nil {
 		return err
 	}
-	if packet.Status != "review" && packet.Status != "review-pending" && packet.Status != "review-failed" {
-		return fmt.Errorf("job %s is %q; attestations require a review result", id, packet.Status)
+	if err := checkJobOperation(id, "attest", packet.Status); err != nil {
+		return fmt.Errorf("%w; attestations require a review result", err)
 	}
 	if o.check == "" {
 		return errors.New("--check is required, for example --check local-dev/scope")
@@ -2268,8 +2330,12 @@ func jobTerminate(root, id, status string, o jobOptions) error {
 	if o.reason == "" {
 		return errors.New("--reason is required")
 	}
-	if packet.Status == "merged" || packet.Status == "cancelled" {
-		return fmt.Errorf("job %s is already terminal: %s", id, packet.Status)
+	operation := "cancel"
+	if status == stateBlocked {
+		operation = "block"
+	}
+	if err := checkJobOperation(id, operation, packet.Status); err != nil {
+		return err
 	}
 	actor := o.actor
 	if actor == "" {
@@ -2359,19 +2425,49 @@ func jobTerminate(root, id, status string, o jobOptions) error {
 	return nil
 }
 
+// jobPause records a deliberate pause. Unlike block, it means Control chose
+// to stop work, not that an external dependency is missing; unlike cancel,
+// the worktree is kept and the job can resume.
+func jobPause(root, id string, o jobOptions) error {
+	packet, body, err := readJob(root, id)
+	if err != nil {
+		return err
+	}
+	if err := checkJobOperation(id, "pause", packet.Status); err != nil {
+		return err
+	}
+	if strings.TrimSpace(o.actor) == "" {
+		return errors.New("--actor is required for a lifecycle transition")
+	}
+	if strings.TrimSpace(o.reason) == "" {
+		return errors.New("--reason is required")
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	appendTransition(&packet, statePaused, o.reason, o.actor, now)
+	packet.Status, packet.UpdatedAt = statePaused, now
+	if err := writeJob(root, packet, body); err != nil {
+		return err
+	}
+	if err := commitLifecycleRecord(root, []string{jobPath(root, id)}, "Record pause "+id); err != nil {
+		return err
+	}
+	fmt.Printf("Paused %s; worktree %s is kept for resume\n", id, packet.Worktree)
+	return nil
+}
+
 func jobResume(root, id string, o jobOptions) error {
 	packet, body, err := readJob(root, id)
 	if err != nil {
 		return err
 	}
-	if packet.Status != "blocked" {
-		return fmt.Errorf("job %s is %q; only blocked jobs may resume", id, packet.Status)
+	if err := checkJobOperation(id, "resume", packet.Status); err != nil {
+		return err
 	}
 	if packet.Worktree == "" {
-		return errors.New("blocked job has no worktree; start a new job instead")
+		return fmt.Errorf("%s job has no worktree; reissue it with --from-branch to continue its work", packet.Status)
 	}
 	if _, err := os.Stat(packet.Worktree); err != nil {
-		return fmt.Errorf("blocked job worktree is unavailable: %w", err)
+		return fmt.Errorf("%s job worktree is unavailable (%v); its branch %s is preserved; reissue with --from-branch to continue", packet.Status, err, packet.Branch)
 	}
 	actor := o.actor
 	if actor == "" {
@@ -2533,8 +2629,8 @@ func jobMerge(root, id string) error {
 	if err != nil {
 		return err
 	}
-	if packet.Status != "accepted" {
-		return fmt.Errorf("job %s is %q; only accepted jobs may merge", id, packet.Status)
+	if err := checkJobOperation(id, "merge", packet.Status); err != nil {
+		return err
 	}
 	if packet.ReviewCommit == "" || packet.Branch == "" {
 		return errors.New("job is missing reviewed commit or source branch")
@@ -2570,7 +2666,9 @@ func jobMerge(root, id string) error {
 	if err != nil {
 		return fmt.Errorf("resolve merge commit: %w", err)
 	}
-	packet.Status, packet.MergeCommit, packet.UpdatedAt = "merged", strings.TrimSpace(mergeCommit), time.Now().UTC().Format(time.RFC3339)
+	mergedAt := time.Now().UTC().Format(time.RFC3339)
+	appendTransition(&packet, stateMerged, "merged "+shortCommit(strings.TrimSpace(mergeCommit)), lifecycleActor(), mergedAt)
+	packet.Status, packet.MergeCommit, packet.UpdatedAt = stateMerged, strings.TrimSpace(mergeCommit), mergedAt
 	if err := writeJob(root, packet, body); err != nil {
 		return err
 	}
