@@ -165,6 +165,9 @@ func checkProject(root string) (projectCheckReport, error) {
 	} else if !containsProjectString(report.Missing, "control/project-intake.md") {
 		report.Invalid = append(report.Invalid, intakeErr.Error())
 	}
+	worktreeInvalid, worktreeWarningsList := checkWorktreeSettings(root)
+	report.Invalid = append(report.Invalid, worktreeInvalid...)
+	report.Warnings = append(report.Warnings, worktreeWarningsList...)
 	report.Valid = len(report.Missing) == 0 && len(report.Invalid) == 0
 	return report, nil
 }
