@@ -541,6 +541,12 @@ Build the service skeleton.
 	if mergedPacket.MergeCommit == "" {
 		t.Fatal("merge commit was not recorded")
 	}
+	if _, err := gitOutput(root, "rev-parse", "--verify", "refs/heads/"+mergedPacket.Branch); err != nil {
+		t.Fatalf("merge cleanup deleted the job branch: %v", err)
+	}
+	if last := mergedPacket.Transitions[len(mergedPacket.Transitions)-1]; last.To != "merged" {
+		t.Fatalf("merge transition not recorded: %+v", last)
+	}
 	evidence, err := os.ReadFile(filepath.Join(root, packetAfterSecondReview.GateEvidence[0].Evidence))
 	if err != nil {
 		t.Fatalf("gate evidence file missing: %v", err)

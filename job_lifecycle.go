@@ -39,6 +39,7 @@ Usage:
   leadfox job block <id> --reason TEXT
   leadfox job pause <id> --actor NAME --reason TEXT
   leadfox job resume <id> --actor NAME [--reason TEXT]
+  leadfox job recover <id> --actor NAME --reason TEXT [--worktree DIR]
   leadfox job progress <id> [--remaining TEXT] [--next TEXT] [--blocker TEXT] [--gate ID]
   leadfox job progress <id> --show [--format json]
   leadfox job runtime register|heartbeat|event|show <id> [options]
@@ -550,6 +551,8 @@ func runJobCommand(args []string) error {
 		return jobResume(root, id, options)
 	case "pause":
 		return jobPause(root, id, options)
+	case "recover":
+		return jobRecover(root, id, options)
 	case "reissue":
 		return errors.New("job reissue requires an old and new job ID")
 	case "list":
@@ -950,6 +953,7 @@ func validateJobOptions(operation string, o jobOptions) error {
 		"block":     {"reason": true, "actor": true, "approved-by": true},
 		"resume":    {"reason": true, "actor": true},
 		"pause":     {"reason": true, "actor": true},
+		"recover":   {"reason": true, "actor": true, "worktree": true, "allow-volatile-worktree": true},
 		"progress":  {"remaining": true, "next": true, "blocker": true, "gate": true, "actor": true, "show": true, "format": true},
 		"runtime":   {"runtime": true, "execution-id": true, "event-id": true, "type": true, "output-ref": true, "seq": true, "exit-code": true, "note": true, "actor": true, "format": true},
 		"check":     {"all": true},

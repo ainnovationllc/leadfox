@@ -163,6 +163,28 @@ state and inventory records, CI-validation policy enforcement, and
 policy-driven approval envelopes. These require additional compatibility and
 project-policy design before they become defaults.
 
+## Phase 7 — job reliability and recovery (implemented)
+
+Specification: `docs/planning/leadfox-job-reliability-001.md`; plan and
+implementation notes: `docs/planning/leadfox-job-reliability-implementation-001.md`.
+
+- Persistent job-worktree root (`control/settings/worktrees.yaml`), `~`
+  expansion, and refusal of volatile locations unless a recorded override is
+  permitted.
+- Uncommitted work is saved to `refs/leadfox/recovery/<job>/<n>` before any
+  worktree removal; branches and recovery refs are never deleted.
+- `job reissue --from-branch | --from-recovery` continues preserved work
+  with scope still checked.
+- States `paused`, `worker-lost` and `timed-out`, a single transition
+  table, and `job pause`.
+- An uncommitted runtime journal for `job progress` and `job runtime`
+  events, with deterministic handling of duplicate and out-of-order events.
+- `job check` records worker loss and timeouts with an interruption record;
+  manual jobs without a runtime are never marked lost automatically.
+- Local notifications on standard error and in the journal.
+- `job recover` recreates a missing worktree from the branch and leaves the
+  job paused. Recovery never approves, merges, pushes or deploys.
+
 ## Explicit boundary
 
 Leadfox must not absorb project-specific assumptions such as Canvas, a

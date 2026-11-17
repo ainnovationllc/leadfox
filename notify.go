@@ -110,6 +110,9 @@ func recoveryActionFor(packet jobPacket, event string) string {
 	case "cancelled":
 		return "no action needed unless the work should continue"
 	case "recovery-ready":
+		if packet.Status == statePaused {
+			return fmt.Sprintf("worktree %s restored; continue with leadfox job resume %s", packet.Worktree, packet.ID)
+		}
 		if point, ok := latestRecoveryPoint(packet); ok {
 			return fmt.Sprintf("work preserved at %s; continue with leadfox job reissue %s NEW-ID --from-recovery latest", point.Ref, packet.ID)
 		}

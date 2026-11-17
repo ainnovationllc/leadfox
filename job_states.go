@@ -91,6 +91,9 @@ var jobOperations = map[string]jobOperationRule{
 	"attest":   {From: reviewStates},
 	"evidence": {From: reviewStates},
 	"merge":    {From: []string{stateAccepted}, To: stateMerged},
+	// Recovery rebuilds a missing worktree from the branch and leaves the job
+	// paused; it never approves, merges or deletes anything.
+	"recover": {From: []string{stateWorkerLost, stateTimedOut, stateCancelled, statePaused, stateBlocked}, To: statePaused},
 	// Recorded only by job check from runtime evidence or the job timeout.
 	"lose":     {From: []string{stateRunning}, To: stateWorkerLost},
 	"time-out": {From: []string{stateRunning}, To: stateTimedOut},

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // recoveryRefPrefix is the namespace for preserved job work. Leadfox creates
@@ -243,6 +244,150 @@ func recoveryDescription(root string, packet jobPacket) string {
 	if packet.Branch != "" {
 		if commit, err := resolveCommit(root, "refs/heads/"+packet.Branch); err == nil {
 			return fmt.Sprintf("cancelled before recovery records existed; branch %s (%s) may contain partial work", packet.Branch, shortCommit(commit))
+		}
+	}
+	return ""
+}
+
+// jobRecover restores an interrupted or cancelled job to a resumable state
+// without reconstructing its metadata by hand. It verifies the branch,
+// prunes stale worktree entries, recreates a missing worktree from the
+// branch (restoring the latest uncommitted snapshot when it applies),
+// records a recovery point and leaves the job paused. It never approves,
+// merges, pushes, or deletes anything.
+func jobRecover(root, id string, o jobOptions) error {
+	packet, body, err := readJob(root, id)
+	if err != nil {
+		return err
+	}
+	if err := checkJobOperation(id, "recover", packet.Status); err != nil {
+		return err
+	}
+	if packet.SupersededBy != "" {
+		return fmt.Errorf("job %s is superseded by %s; recover that job instead", id, packet.SupersededBy)
+	}
+	if strings.TrimSpace(o.actor) == "" {
+		return errors.New("--actor is required for a lifecycle transition")
+	}
+	if strings.TrimSpace(o.reason) == "" {
+		return errors.New("--reason is required")
+	}
+	if packet.Branch == "" {
+		return fmt.Errorf("job %s never started and has no branch; set it ready and start it instead", id)
+	}
+	branchHead, err := resolveCommit(root, "refs/heads/"+packet.Branch)
+	if err != nil {
+		return fmt.Errorf("job %s branch %s is unavailable; recovery needs the branch: %w", id, packet.Branch, err)
+	}
+	worktreePresent := false
+	if packet.Worktree != "" {
+		if _, statErr := os.Stat(packet.Worktree); statErr == nil {
+			worktreePresent = true
+		}
+	}
+	if worktreePresent && o.worktree != "" {
+		return fmt.Errorf("job %s worktree %s still exists; --worktree applies only when it must be recreated", id, packet.Worktree)
+	}
+	if worktreePresent && (packet.Status == statePaused || packet.Status == stateBlocked) {
+		return fmt.Errorf("job %s is %s and its worktree is present; nothing to recover, use leadfox job resume", id, packet.Status)
+	}
+	if !mustBeClean(root, "Control worktree") {
+		return errors.New("Control worktree is not clean")
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	restoredSnapshot := ""
+	if !worktreePresent {
+		if _, err := gitOutput(root, "worktree", "prune"); err != nil {
+			return fmt.Errorf("prune stale worktree entries: %w", err)
+		}
+		settings, err := loadWorktreeSettings(root)
+		if err != nil {
+			return err
+		}
+		previous := packet.Worktree
+		if previous == "" {
+			if point, ok := latestRecoveryPoint(packet); ok {
+				previous = point.Worktree
+			}
+		}
+		worktree, err := resolveJobWorktreePath(root, id, "", firstNonEmpty(o.worktree, previous), settings)
+		if err != nil {
+			return err
+		}
+		if err := ensureExternalWorktree(root, worktree); err != nil {
+			return err
+		}
+		override, err := checkJobWorktreeLocation(worktree, settings, o.allowVolatile, o.reason, o.actor, now)
+		if err != nil {
+			return err
+		}
+		if _, statErr := os.Stat(worktree); statErr == nil {
+			return fmt.Errorf("recovery worktree path already exists: %s; choose another with --worktree", worktree)
+		}
+		if err := os.MkdirAll(filepath.Dir(worktree), 0o755); err != nil {
+			return fmt.Errorf("create worktree parent: %w", err)
+		}
+		if _, err := gitOutput(root, "worktree", "add", worktree, packet.Branch); err != nil {
+			return fmt.Errorf("recreate job worktree from %s: %w", packet.Branch, err)
+		}
+		if err := applyWorktreeEnvironment(root, worktree); err != nil {
+			_, _ = gitOutput(root, "worktree", "remove", "--force", worktree)
+			return err
+		}
+		if point, ok := latestRecoveryPoint(packet); ok && point.Snapshot && point.BranchHead == branchHead {
+			// Restore the uncommitted work captured at cancellation as
+			// unstaged changes, leaving the branch itself unchanged.
+			if _, err := gitOutput(worktree, "checkout", point.Commit, "--", "."); err != nil {
+				return fmt.Errorf("restore recovery snapshot %s: %w", point.Ref, err)
+			}
+			if _, err := gitOutput(worktree, "reset", "-q"); err != nil {
+				return fmt.Errorf("unstage restored snapshot: %w", err)
+			}
+			restoredSnapshot = point.Ref
+		}
+		packet.Worktree = worktree
+		packet.WorktreeOverride = override
+	}
+	point, err := preserveJobWork(root, packet, "recovered: "+o.reason, o.actor, now, false)
+	if err != nil {
+		return err
+	}
+	if point != nil {
+		packet.RecoveryPoints = append(packet.RecoveryPoints, *point)
+	}
+	appendTransition(&packet, statePaused, "recovered: "+o.reason, o.actor, now)
+	packet.Status, packet.UpdatedAt = statePaused, now
+	if err := writeJob(root, packet, body); err != nil {
+		return err
+	}
+	if err := commitLifecycleRecord(root, []string{jobPath(root, id)}, "Record recover "+id); err != nil {
+		return err
+	}
+	fmt.Printf("Recovered %s: branch %s at %s, worktree %s; status paused\n", id, packet.Branch, shortCommit(branchHead), packet.Worktree)
+	if restoredSnapshot != "" {
+		fmt.Printf("Restored uncommitted work from %s as unstaged changes\n", restoredSnapshot)
+	}
+	var remaining []string
+	for _, criterion := range packet.AcceptanceCriteria {
+		if criterion.Status != "passed" && criterion.Status != "waived" {
+			remaining = append(remaining, criterion.ID+" ("+criterion.Status+")")
+		}
+	}
+	if len(remaining) > 0 {
+		fmt.Println("Remaining acceptance criteria:", strings.Join(remaining, ", "))
+	}
+	if len(packet.Gates) > 0 {
+		fmt.Println("Required gates:", strings.Join(packet.Gates, ", "))
+	}
+	fmt.Printf("Next: register a new execution if a worker continues, then leadfox job resume %s --actor NAME\n", id)
+	notifyJob(root, packet, "recovery-ready", o.reason, branchHead, "", false)
+	return nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
 		}
 	}
 	return ""

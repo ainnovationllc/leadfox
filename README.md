@@ -86,6 +86,11 @@ leadfox job scope add ID       Record a scope amendment and invalidate stale rev
 leadfox job readiness JOB-ID    Check whether a job is ready to start
 leadfox job context JOB-ID      Export bounded job context
 leadfox job validate JOB-ID    Validate handoff and evidence completeness
+leadfox job pause|resume ID     Pause or resume a job; its worktree is kept
+leadfox job progress JOB-ID     Record or show worker progress (not evidence)
+leadfox job runtime <op> ID     Report execution-host events for a running job
+leadfox job check --all         Record worker loss and timeouts from runtime events
+leadfox job recover JOB-ID      Recreate a lost worktree from the job branch
 leadfox capability <operation> Inspect agent-host capabilities
 leadfox policy <operation>     Validate or inspect Control authority policy
 leadfox assurance report       Report assurance evidence coverage

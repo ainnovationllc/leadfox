@@ -316,7 +316,7 @@ func TestProgressOptionsAreBoundToProgress(t *testing.T) {
 		operations = append(operations, operation)
 	}
 	sort.Strings(operations)
-	if strings.Join(operations, ",") != "approve,attest,block,cancel,evidence,lose,merge,pause,progress,resume,review,start,sync,time-out" {
+	if strings.Join(operations, ",") != "approve,attest,block,cancel,evidence,lose,merge,pause,progress,recover,resume,review,start,sync,time-out" {
 		t.Fatalf("lifecycle operations changed without updating tests: %v", operations)
 	}
 }
