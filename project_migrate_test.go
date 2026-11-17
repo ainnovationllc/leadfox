@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -67,5 +68,47 @@ func TestDoctorReportsIncompleteIntakeAsWarning(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("missing intake warning: %+v", report.Findings)
+	}
+}
+
+func TestSchemaVersionIsIndependentOfProjectModelVersion(t *testing.T) {
+	root := writeProjectFixture(t)
+	path := filepath.Join(root, "control", "project.yaml")
+	// A project created before leadfox_schema existed, whose Control used
+	// project.version for its own architecture revision.
+	writeTestFile(t, path, "project:\n  name: example\n  version: 3\n")
+	report, err := inspectProjectSchema(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Current != 1 || report.Status != "current" {
+		t.Fatalf("project.version was treated as the schema version: %+v", report)
+	}
+	status, err := buildProjectStatus(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.ModelVersion != 3 {
+		t.Fatalf("project model version not reported: %+v", status)
+	}
+
+	writeTestFile(t, path, "leadfox_schema: 2\nproject:\n  name: example\n  version: 1\n")
+	if report, err := inspectProjectSchema(root); err != nil || report.Status != "unsupported" {
+		t.Fatalf("a newer leadfox_schema should be unsupported: %+v %v", report, err)
+	}
+}
+
+func TestInitDeclaresLeadfoxSchema(t *testing.T) {
+	root := writeProjectFixture(t)
+	report, err := inspectProjectSchema(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(filepath.Join(root, "control", "project.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Current != 1 || report.Status != "current" || !strings.Contains(string(content), "leadfox_schema: 1") || !strings.Contains(string(content), "Leadfox does not interpret it") {
+		t.Fatalf("init template does not separate the schema and model versions: %+v\n%s", report, content)
 	}
 }
