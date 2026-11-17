@@ -410,3 +410,8 @@ pickers.
 - Superseded jobs follow the same rules as cancelled ones.
 
 **Observed:** paper-crane JOB-032 trial, 2026-11-17.
+
+*(Delivered after 0.3.0-rc.1 as `leadfox job prune`. Instead of skipping
+cancelled branches without a recovery ref, prune first preserves their head
+as a new recovery ref, so every merged or cancelled branch can be pruned
+without making work unreachable.)*

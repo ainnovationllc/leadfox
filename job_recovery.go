@@ -194,6 +194,9 @@ func resolveReissueStartPoint(root string, old jobPacket, o jobOptions) (*jobSta
 		}
 		ref := "refs/heads/" + old.Branch
 		commit, err := resolveCommit(root, ref)
+		if err != nil && old.PrunedBranch != nil {
+			return nil, fmt.Errorf("job %s: %s", old.ID, prunedBranchHint(old))
+		}
 		if err != nil {
 			return nil, fmt.Errorf("job %s branch %s is unavailable: %w", old.ID, old.Branch, err)
 		}
@@ -241,6 +244,9 @@ func recoveryDescription(root string, packet jobPacket) string {
 		}
 		return fmt.Sprintf("work preserved at %s (%s, %s)", point.Ref, shortCommit(point.Commit), detail)
 	}
+	if packet.PrunedBranch != nil {
+		return prunedBranchHint(packet)
+	}
 	if packet.Branch != "" {
 		if commit, err := resolveCommit(root, "refs/heads/"+packet.Branch); err == nil {
 			return fmt.Sprintf("cancelled before recovery records existed; branch %s (%s) may contain partial work", packet.Branch, shortCommit(commit))
@@ -276,6 +282,9 @@ func jobRecover(root, id string, o jobOptions) error {
 		return fmt.Errorf("job %s never started and has no branch; set it ready and start it instead", id)
 	}
 	branchHead, err := resolveCommit(root, "refs/heads/"+packet.Branch)
+	if err != nil && packet.PrunedBranch != nil {
+		return fmt.Errorf("job %s cannot be recovered in place: %s", id, prunedBranchHint(packet))
+	}
 	if err != nil {
 		return fmt.Errorf("job %s branch %s is unavailable; recovery needs the branch: %w", id, packet.Branch, err)
 	}
