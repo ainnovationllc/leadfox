@@ -95,6 +95,9 @@ const (
 	// conditionClosed marks an execution already closed by a recorded
 	// interruption; its events are no longer evaluated.
 	conditionClosed = "execution-closed"
+	// conditionJobEnded marks the last execution of a job that is now merged
+	// or cancelled; its events are history, not a live condition.
+	conditionJobEnded = "job-ended"
 )
 
 var runtimeEventTypes = map[string]bool{"register": true, "start": true, "heartbeat": true, "progress": true, "output-ref": true, "handoff": true, "exit": true, "disconnect": true, "notification": true}
@@ -400,9 +403,9 @@ func showJobRuntime(root string, packet jobPacket, format string) error {
 	if err != nil {
 		return err
 	}
-	state := deriveRuntimeState(events, nowFunc(), thresholds)
+	state, progress := runtimeShowState(packet, events, nowFunc(), thresholds)
 	if format == "json" {
-		encoded, err := json.MarshalIndent(map[string]any{"job": packet.ID, "status": packet.Status, "runtime": state, "malformed_lines": malformed}, "", "  ")
+		encoded, err := json.MarshalIndent(map[string]any{"job": packet.ID, "status": packet.Status, "runtime": state, "progress_events": progress, "malformed_lines": malformed}, "", "  ")
 		if err != nil {
 			return err
 		}
@@ -433,13 +436,37 @@ func showJobRuntime(root string, packet jobPacket, format string) error {
 		}
 		fmt.Println(line)
 	}
+	if progress > 0 {
+		fmt.Printf("%d progress update(s) not listed; see leadfox job progress %s --show\n", progress, packet.ID)
+	}
 	if malformed > 0 {
 		fmt.Printf("Warning: %d malformed journal line(s) skipped\n", malformed)
 	}
 	return nil
 }
 
+// runtimeShowState derives the runtime state for display and counts the
+// progress events, which runtime show leaves to job progress --show. For a
+// merged or cancelled job the last execution is reported as ended rather
+// than with a live condition such as handed-off or stale.
+func runtimeShowState(packet jobPacket, events []runtimeEvent, now time.Time, thresholds runtimeThresholds) (runtimeState, int) {
+	state := deriveRuntimeState(events, now, thresholds)
+	if isTerminalJobStatus(packet.Status) && state.ExecutionID != "" {
+		state.Condition = conditionJobEnded
+	}
+	progress := 0
+	for _, event := range events {
+		if event.Type == "progress" {
+			progress++
+		}
+	}
+	return state, progress
+}
+
 func describeRuntime(state runtimeState) string {
+	if state.Condition == conditionJobEnded {
+		return fmt.Sprintf("execution %s via %s ended; the job is closed (last %s at %s)", state.ExecutionID, state.Runtime, state.LastEventType, state.LastEventAt)
+	}
 	if state.Condition == conditionClosed {
 		return fmt.Sprintf("execution %s via %s was closed by a recorded interruption (last %s at %s); register a new execution when work resumes", state.ExecutionID, state.Runtime, state.LastEventType, state.LastEventAt)
 	}

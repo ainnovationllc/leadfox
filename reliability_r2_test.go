@@ -455,3 +455,28 @@ func TestJobCheckRefusesWithStagedChanges(t *testing.T) {
 		t.Fatalf("refused check changed status to %s", status)
 	}
 }
+
+func TestRuntimeShowForClosedJobAndProgressCount(t *testing.T) {
+	t0 := time.Now().UTC()
+	root, _ := newRuntimeJob(t, "JOB-SHOW", t0)
+	if err := jobProgress(root, "JOB-SHOW", jobOptions{next: "write tests", executionID: "exec-1"}); err != nil {
+		t.Fatal(err)
+	}
+	runtimeOK(t, root, "event", "JOB-SHOW", jobOptions{executionID: "exec-1", eventType: "handoff"})
+	events := mustJournal(t, root, "JOB-SHOW")
+	packet := mustReadJob(t, root, "JOB-SHOW")
+	later := t0.Add(13 * time.Hour)
+
+	state, progress := runtimeShowState(packet, events, later, defaultRuntimeThresholds)
+	if state.Condition != conditionHandedOff || progress != 1 {
+		t.Fatalf("running job: condition %s, progress %d", state.Condition, progress)
+	}
+	for _, status := range []string{stateMerged, stateCancelled} {
+		packet.Status = status
+		state, _ := runtimeShowState(packet, events, later, defaultRuntimeThresholds)
+		text := describeRuntime(state)
+		if state.Condition != conditionJobEnded || !strings.Contains(text, "ended; the job is closed") || strings.Contains(text, "ago") {
+			t.Fatalf("%s job shown as live runtime: %s", status, text)
+		}
+	}
+}

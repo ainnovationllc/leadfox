@@ -388,3 +388,25 @@ things:
 - sapient-lms: the same project under Codex would need `.git` approvals,
   an added writable folder for `~/sapient-lms-jobs`, and a decision on who
   runs its Docker-based integration gates.
+
+## 9. Clean up branches of merged and cancelled jobs (low priority)
+
+`job merge` keeps the job branch on purpose: the review commit and the
+history stay inspectable, and `--from-branch` reissues depend on it. Over a
+project's life the branches accumulate (paper-crane had 32 `job/*`
+branches after JOB-032), which clutters `git branch` and editor branch
+pickers.
+
+**Proposed:**
+- `leadfox job prune [--merged] [--cancelled] [--older-than 30d] [--yes]`
+  lists the branches it would delete and deletes them only with `--yes`.
+- Merged branches are deleted only when the merge commit on the base branch
+  contains the branch head (`git merge-base --is-ancestor`).
+- Cancelled branches with partial work are skipped unless a recovery ref
+  (`refs/leadfox/recovery/<job>/…`) preserves their head; the output names
+  the ref that keeps the work reachable.
+- The job record keeps the branch name and head commit, so `job status`
+  still explains what was merged after the branch is gone.
+- Superseded jobs follow the same rules as cancelled ones.
+
+**Observed:** paper-crane JOB-032 trial, 2026-11-17.
