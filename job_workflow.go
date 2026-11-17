@@ -34,6 +34,8 @@ type jobStatusReport struct {
 	Warnings      []string             `json:"warnings,omitempty"`
 	Recovery      string               `json:"recovery,omitempty"`
 	Activity      *jobStatusActivity   `json:"activity,omitempty"`
+	Runtime       *runtimeState        `json:"runtime,omitempty"`
+	Interruption  *jobInterruption     `json:"interruption,omitempty"`
 	NextAction    string               `json:"next_action"`
 	UpdatedAt     string               `json:"updated_at,omitempty"`
 }
@@ -108,6 +110,12 @@ func jobStatus(root, id, format string) error {
 	}
 	if report.Recovery != "" {
 		fmt.Println("Recovery:", report.Recovery)
+	}
+	if report.Runtime != nil {
+		fmt.Println("Runtime:", describeRuntime(*report.Runtime))
+	}
+	if report.Interruption != nil {
+		fmt.Printf("Interruption: %s at %s\n  Recovery: %s\n", report.Interruption.Reason, report.Interruption.RecordedAt, report.Interruption.RecoveryAction)
 	}
 	if report.Activity != nil {
 		fmt.Println("Activity:", report.Activity.Summary)
@@ -191,10 +199,27 @@ func buildJobStatus(root string, packet jobPacket) jobStatusReport {
 	}
 	report.Warnings = worktreeWarnings(packet)
 	report.Activity = buildJobActivity(root, packet)
+	if isStartedJobStatus(packet.Status) && !isTerminalJobStatus(packet.Status) {
+		if assessment, err := assessJob(root, packet, nowFunc()); err != nil {
+			report.Warnings = append(report.Warnings, "runtime assessment unavailable: "+err.Error())
+		} else {
+			report.Runtime = &assessment.Runtime
+			if text := assessment.attentionText(); text != "" {
+				report.Warnings = append(report.Warnings, text)
+			}
+		}
+	}
+	if isInterruptedJobStatus(packet.Status) && len(packet.Interruptions) > 0 {
+		last := packet.Interruptions[len(packet.Interruptions)-1]
+		report.Interruption = &last
+	}
 	if packet.Status == "cancelled" {
 		report.Recovery = recoveryDescription(root, packet)
 	}
 	report.NextAction = nextJobAction(packet, report.Blockers)
+	if report.Interruption != nil {
+		report.NextAction = report.Interruption.RecoveryAction
+	}
 	if packet.Status == "cancelled" && report.Recovery != "" {
 		if packet.SupersededBy != "" {
 			report.NextAction = "no further lifecycle action; superseded by " + packet.SupersededBy

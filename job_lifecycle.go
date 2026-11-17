@@ -41,6 +41,8 @@ Usage:
   leadfox job resume <id> --actor NAME [--reason TEXT]
   leadfox job progress <id> [--remaining TEXT] [--next TEXT] [--blocker TEXT] [--gate ID]
   leadfox job progress <id> --show [--format json]
+  leadfox job runtime register|heartbeat|event|show <id> [options]
+  leadfox job check <id>... | --all
   leadfox job list
   leadfox job merge <id>
   leadfox job retain <id> --artifact-id ID --actor NAME
@@ -153,6 +155,8 @@ type jobPacket struct {
 	Supersedes         string                `yaml:"supersedes,omitempty"`
 	SupersededBy       string                `yaml:"superseded_by,omitempty"`
 	RecoveryPoints     []jobRecoveryPoint    `yaml:"recovery_points,omitempty"`
+	Timeout            string                `yaml:"timeout,omitempty"`
+	Interruptions      []jobInterruption     `yaml:"interruptions,omitempty"`
 	ScopeAmendments    []jobScopeAmendment   `yaml:"scope_amendments,omitempty"`
 	ChangePlan         string                `yaml:"change_plan,omitempty"`
 	HoldPoint          string                `yaml:"hold_point,omitempty"`
@@ -322,7 +326,10 @@ type jobOptions struct {
 	diagnostic                                               bool
 	allowVolatile, discardUncommitted, fromBranch            bool
 	fromRecovery, remaining, next, blocker                   string
-	show                                                     bool
+	show, all                                                bool
+	runtime, executionID, eventID, eventType, outputRef      string
+	seq                                                      int64
+	exitCode                                                 int
 	artifacts                                                []string
 	allow, exclude, gates, setup, capabilities, risks        []string
 	showHelp                                                 bool
@@ -362,6 +369,57 @@ func runJobCommand(args []string) error {
 			return err
 		}
 		return jobStatus(root, id, format)
+	}
+	if operation == "runtime" {
+		if len(args) < 2 || args[1] == "-h" || args[1] == "--help" {
+			fmt.Print(jobRuntimeHelpText)
+			return nil
+		}
+		options, id, err := parseJobOptions(args[2:])
+		if err != nil {
+			return err
+		}
+		if id == "" {
+			return errors.New("a job ID is required")
+		}
+		if err := validateJobOptions(operation, options); err != nil {
+			return err
+		}
+		root, err := controlRoot(".")
+		if err != nil {
+			return err
+		}
+		return jobRuntimeCommand(root, args[1], id, options)
+	}
+	if operation == "check" {
+		var ids []string
+		var options jobOptions
+		for index, arg := range args[1:] {
+			if !strings.HasPrefix(arg, "-") {
+				ids = append(ids, arg)
+				continue
+			}
+			parsed, _, err := parseJobOptions(args[1+index : 2+index])
+			if err != nil {
+				return err
+			}
+			if parsed.showHelp {
+				fmt.Println("Usage: leadfox job check JOB-ID... | --all")
+				return nil
+			}
+			if err := validateJobOptions(operation, parsed); err != nil {
+				return err
+			}
+			options.all = options.all || parsed.all
+		}
+		if options.all && len(ids) > 0 {
+			return errors.New("use job IDs or --all, not both")
+		}
+		root, err := gitRoot(".")
+		if err != nil {
+			return err
+		}
+		return jobCheck(root, ids, options.all)
 	}
 	if operation == "progress" {
 		options, id, err := parseJobOptions(args[1:])
@@ -511,7 +569,7 @@ func jobList(root string) error {
 	if err != nil {
 		return fmt.Errorf("read job directory: %w", err)
 	}
-	fmt.Println("JOB\tSTATUS\tBRANCH\tUPDATED")
+	fmt.Println("JOB\tSTATUS\tBRANCH\tUPDATED\tATTENTION")
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") || entry.Name() == "README.md" {
 			continue
@@ -522,7 +580,19 @@ func jobList(root string) error {
 			fmt.Fprintf(os.Stderr, "warning: skipping %s: %v\n", entry.Name(), readErr)
 			continue
 		}
-		fmt.Printf("%s\t%s\t%s\t%s\n", packet.ID, packet.Status, packet.Branch, packet.UpdatedAt)
+		attention := "-"
+		if packet.Status == stateRunning {
+			if assessment, assessErr := assessJob(root, packet, nowFunc()); assessErr != nil {
+				attention = "runtime assessment unavailable"
+			} else if assessment.Transition != "" {
+				attention = "presumed " + assessment.Transition + "; run job check"
+			} else if assessment.Runtime.Condition == conditionStale || assessment.Runtime.Condition == conditionHandedOff {
+				attention = assessment.Runtime.Condition
+			}
+		} else if isInterruptedJobStatus(packet.Status) {
+			attention = "interrupted; resume or reissue"
+		}
+		fmt.Printf("%s\t%s\t%s\t%s\t%s\n", packet.ID, packet.Status, packet.Branch, packet.UpdatedAt, attention)
 	}
 	return nil
 }
@@ -747,6 +817,46 @@ func parseJobOptions(args []string) (jobOptions, string, error) {
 		case "--show":
 			o.used["show"] = true
 			o.show = true
+		case "--all":
+			o.used["all"] = true
+			o.all = true
+		case "--runtime", "--execution-id", "--event-id", "--type", "--output-ref":
+			key := strings.TrimPrefix(arg, "--")
+			o.used[key] = true
+			v, n, e := requiredOptionValue(args, i, arg)
+			if e != nil {
+				return o, id, e
+			}
+			switch key {
+			case "runtime":
+				o.runtime = v
+			case "execution-id":
+				o.executionID = v
+			case "event-id":
+				o.eventID = v
+			case "type":
+				o.eventType = v
+			default:
+				o.outputRef = v
+			}
+			i = n
+		case "--seq", "--exit-code":
+			key := strings.TrimPrefix(arg, "--")
+			o.used[key] = true
+			v, n, e := requiredOptionValue(args, i, arg)
+			if e != nil {
+				return o, id, e
+			}
+			parsed, scanErr := strconv.ParseInt(v, 10, 64)
+			if scanErr != nil || (key == "seq" && parsed < 1) || (key == "exit-code" && (parsed < -1 || parsed > 255)) {
+				return o, id, fmt.Errorf("--%s requires an integer (seq >= 1, exit code -1..255)", key)
+			}
+			if key == "seq" {
+				o.seq = parsed
+			} else {
+				o.exitCode = int(parsed)
+			}
+			i = n
 		case "--from-branch":
 			o.used["from-branch"] = true
 			o.fromBranch = true
@@ -841,6 +951,8 @@ func validateJobOptions(operation string, o jobOptions) error {
 		"resume":    {"reason": true, "actor": true},
 		"pause":     {"reason": true, "actor": true},
 		"progress":  {"remaining": true, "next": true, "blocker": true, "gate": true, "actor": true, "show": true, "format": true},
+		"runtime":   {"runtime": true, "execution-id": true, "event-id": true, "type": true, "output-ref": true, "seq": true, "exit-code": true, "note": true, "actor": true, "format": true},
+		"check":     {"all": true},
 		"reissue":   {"reason": true, "actor": true, "discard-uncommitted": true, "from-branch": true, "from-recovery": true},
 		"list":      {},
 		"merge":     {},
@@ -1146,6 +1258,7 @@ func jobStart(root, id string, o jobOptions) error {
 		for _, warning := range worktreeWarnings(packet) {
 			fmt.Fprintln(os.Stderr, "warning:", warning)
 		}
+		notifyJob(root, packet, "start", "", "", "", false)
 		return nil
 	}
 	// The branch was created at BaseCommit. Fast-forward it to the shared
@@ -1158,6 +1271,7 @@ func jobStart(root, id string, o jobOptions) error {
 		fmt.Fprintln(os.Stderr, "warning:", warning)
 	}
 	fmt.Printf("Started %s on %s at %s\n", id, branch, worktree)
+	notifyJob(root, packet, "start", "", "", "", false)
 	return nil
 }
 
@@ -2381,6 +2495,7 @@ func jobTerminate(root, id, status string, o jobOptions) error {
 			return err
 		}
 		fmt.Printf("Marked %s as blocked; its worktrees remain available for resume\n", id)
+		notifyJob(root, packet, "blocked", o.reason, "", "", true)
 		return nil
 	}
 	if err := commitLifecycleRecord(root, []string{jobPath(root, id)}, "Record cancel "+id); err != nil {
@@ -2422,6 +2537,10 @@ func jobTerminate(root, id, status string, o jobOptions) error {
 			fmt.Println("Uncommitted worktree changes were discarded as requested.")
 		}
 	}
+	notifyJob(root, packet, "cancelled", o.reason, "", "", false)
+	if recovery != nil {
+		notifyJob(root, packet, "recovery-ready", "", recovery.Commit, "", false)
+	}
 	return nil
 }
 
@@ -2452,6 +2571,7 @@ func jobPause(root, id string, o jobOptions) error {
 		return err
 	}
 	fmt.Printf("Paused %s; worktree %s is kept for resume\n", id, packet.Worktree)
+	notifyJob(root, packet, "paused", o.reason, "", "", false)
 	return nil
 }
 
@@ -2564,6 +2684,7 @@ func jobReissue(root, oldID, newID string, o jobOptions) error {
 	newPacket.WorktreeOverride = nil
 	newPacket.StartPoint = startPoint
 	newPacket.RecoveryPoints = nil
+	newPacket.Interruptions = nil
 	newPacket.ReviewCommit = ""
 	newPacket.ReviewWorktree = ""
 	newPacket.ReviewWorktrees = nil

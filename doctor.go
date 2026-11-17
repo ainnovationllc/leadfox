@@ -95,6 +95,16 @@ func buildDiagnosticReport(root string) diagnosticReport {
 				add("job.unreadable", "error", fmt.Sprintf("job %s: %v", id, packetErr), "Repair the job packet front matter.")
 				continue
 			}
+			if packet.Status == stateRunning {
+				if assessment, assessErr := assessJob(root, packet, nowFunc()); assessErr != nil {
+					add("job.runtime", "warning", fmt.Sprintf("%s: %v", id, assessErr), "Repair control/settings/runtime.yaml or the job timeout.")
+				} else if text := assessment.attentionText(); text != "" {
+					add("job.attention", "warning", fmt.Sprintf("%s: %s", id, text), "Run leadfox job check "+id+" and follow the recorded recovery action.")
+				}
+			}
+			if isInterruptedJobStatus(packet.Status) {
+				add("job.interrupted", "warning", fmt.Sprintf("%s is %s", id, packet.Status), "Inspect leadfox job status "+id+", then resume or reissue it from the preserved work.")
+			}
 			if packet.Status == "ready" {
 				readiness := inspectJobReadiness(root, packet)
 				for _, finding := range readiness.Findings {

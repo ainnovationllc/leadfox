@@ -209,7 +209,13 @@ func TestProgressFromControlAndWorktree(t *testing.T) {
 		t.Fatalf("progress from Control: %v", err)
 	}
 
-	events, malformed, err := readJournal(root, "JOB-PR")
+	all, malformed, err := readJournal(root, "JOB-PR")
+	var events []runtimeEvent
+	for _, event := range all {
+		if event.Type == "progress" {
+			events = append(events, event)
+		}
+	}
 	if err != nil || malformed != 0 || len(events) != 2 {
 		t.Fatalf("journal read: %d events, %d malformed, %v", len(events), malformed, err)
 	}
@@ -310,7 +316,7 @@ func TestProgressOptionsAreBoundToProgress(t *testing.T) {
 		operations = append(operations, operation)
 	}
 	sort.Strings(operations)
-	if strings.Join(operations, ",") != "approve,attest,block,cancel,evidence,merge,pause,progress,resume,review,start,sync" {
+	if strings.Join(operations, ",") != "approve,attest,block,cancel,evidence,lose,merge,pause,progress,resume,review,start,sync,time-out" {
 		t.Fatalf("lifecycle operations changed without updating tests: %v", operations)
 	}
 }
