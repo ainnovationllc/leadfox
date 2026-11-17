@@ -541,6 +541,125 @@ destination with the declared hash. The job packet records the actor,
 timestamp, source, and retained hash. Registered operations checkouts are also
 protected from job cleanup.
 
+## Job reliability and recovery
+
+Leadfox keeps a started job from disappearing silently. These rules apply
+to every job, with or without an execution runtime.
+
+### Persistent worktrees
+
+`leadfox init` writes `control/settings/worktrees.yaml`:
+
+```yaml
+schema_version: 1
+root: ../<project>-jobs   # relative to the Control checkout, or absolute
+allow_volatile: false
+```
+
+`job start` uses the packet's `worktree:`, then `--worktree`, then
+`<root>/<job-id>`. `~` and `~/…` are expanded. Locations that hosts clear,
+such as `/tmp`, `/private/tmp`, `/var/folders` and `$TMPDIR`, are refused,
+including through symbolic links. With `allow_volatile: true`, a job may
+start there with `--allow-volatile-worktree --reason TEXT`; the override is
+recorded and `job status` warns about it while the worktree exists.
+
+### Job states
+
+| State | Meaning |
+|---|---|
+| `running` | Work in progress |
+| `paused` | Deliberately paused by Control (`job pause`); worktree kept |
+| `blocked` | Waiting on an external blocker (`job block`); worktree kept |
+| `worker-lost` | The worker stopped without a handoff (recorded by `job check`) |
+| `timed-out` | The job ran past its timeout (recorded by `job check`) |
+| `cancelled` | Cancelled, not completed; work preserved for recovery |
+
+`job resume` continues a `paused`, `blocked`, `worker-lost` or `timed-out`
+job whose worktree still exists. `job status` shows what the state means
+and the recorded reason.
+
+### Work is never discarded
+
+Before cancel, reissue or merge cleanup removes a job worktree, Leadfox
+saves uncommitted tracked and untracked files as a commit under
+`refs/leadfox/recovery/<job>/<n>` without touching the worktree, and records
+a recovery point. If the save fails, nothing is cancelled. Use
+`--discard-uncommitted` to cancel without it; the choice is recorded.
+Leadfox never deletes job branches or recovery refs.
+
+```sh
+# Recreate a missing worktree from the branch, restore saved uncommitted
+# work, and leave the job paused for review or resume.
+leadfox job recover JOB-001 --actor Control --reason "host restarted"
+leadfox job resume JOB-001 --actor Control
+
+# Or continue the work in a new job.
+leadfox job reissue JOB-001 JOB-002 --actor Control --reason "new worker" --from-branch
+leadfox job reissue JOB-001 JOB-002 --actor Control --reason "new worker" --from-recovery latest
+```
+
+Recovery and reissue never approve, merge, push or deploy. A reissued job
+starts from the preserved work and is scope-checked from its start record,
+so carried-over commits are still checked.
+
+### Progress and runtime events
+
+Workers and hosts write to an uncommitted journal,
+`.local/leadfox/runtime/<job>.jsonl`, in the Control checkout. These
+commands may be run from the job worktree. The project's `.gitignore` must
+ignore `.local/`; Leadfox refuses to write a journal Git would track.
+
+```sh
+leadfox job progress JOB-001 --remaining "handler tests" --next "write handler" --gate unit
+leadfox job runtime register JOB-001 --runtime codex --execution-id run-42
+leadfox job runtime heartbeat JOB-001 --execution-id run-42
+leadfox job runtime event JOB-001 --execution-id run-42 --type handoff
+leadfox job runtime event JOB-001 --execution-id run-42 --type exit --exit-code 0
+leadfox job runtime show JOB-001
+```
+
+Text that looks like a credential, and text over 1,000 characters, is
+refused. Output is referenced by path or URL (`--type output-ref`), never
+stored. Progress and runtime events are not evidence: review, approval and
+merge never read them. Duplicate event IDs are ignored; events whose
+`--seq` is not above the last one applied, and events from a replaced
+execution, do not change state.
+
+### Detecting lost workers
+
+Runtime events never change the job record. Control runs:
+
+```sh
+leadfox job check --all
+```
+
+`job check` records `worker-lost` when the registered worker exited or
+disconnected without a handoff (even with exit code 0), or has been silent
+longer than `worker_lost_after`; and `timed-out` when the job has run past
+its timeout. Each records an interruption with the reason, execution, last
+commit and recovery action, and commits it. A job with no registered
+runtime is never marked lost automatically. Thresholds are set in
+`control/settings/runtime.yaml`:
+
+```yaml
+schema_version: 1
+heartbeat_stale_after: 15m
+worker_lost_after: 60m
+job_timeout: none   # or a duration; a packet may set timeout: 4h
+```
+
+`job status`, `job list` (the `ATTENTION` column), `project status` and
+`doctor` show the same assessment without changing anything. Run
+`job check --all` at the start of each Control session.
+
+### Notifications
+
+Leadfox prints a `leadfox notice:` line on standard error and records it in
+the journal for start, stale worker, worker loss, timeout, handoff, block,
+pause, cancel and recovery readiness. Each names the project, job, event,
+state, latest commit, recovery action and whether owner attention is
+required. Reasons that look like credentials are withheld.
+
 ## 9. Gates and evidence
 
 Run a gate from the project root:

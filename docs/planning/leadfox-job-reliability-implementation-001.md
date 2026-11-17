@@ -1,6 +1,6 @@
 # Leadfox job reliability: implementation plan
 
-Status: approved; owner confirmed section 3 defaults on 2026-11-16
+Status: implemented (R0–R3); owner confirmed section 3 defaults on 2026-11-16
 Source specification: `docs/planning/leadfox-job-reliability-001.md`
 Control prompt: `docs/prompts/leadfox-job-reliability-control.md`
 Priority: high; before Herdr integration and before other backlog work
@@ -355,6 +355,23 @@ items as delivered.
 - `project status` and `doctor` report running jobs that `job check` would
   change, stale workers, and interrupted jobs as warnings.
 
+### R3 implementation notes
+
+- `job recover` accepts `worker-lost`, `timed-out` and `cancelled` jobs, and
+  `paused` or `blocked` jobs whose worktree is missing. It refuses jobs
+  that never started, merged jobs, and superseded jobs. It prunes stale
+  worktree entries, recreates the worktree on the job branch (at the
+  recorded path, `--worktree`, or the configured root), restores the latest
+  uncommitted snapshot as unstaged changes when the branch has not moved
+  since it was taken, records a recovery point, and leaves the job `paused`.
+  Files deleted (rather than modified) before a snapshot are not
+  re-deleted on restore.
+- The lifecycle merge test now also asserts that the job branch survives
+  merge cleanup and that the merge transition is recorded.
+- `docs/backlog-field-lessons.md` item 8 was not updated, because that item
+  is part of the owner's uncommitted edits; its worktree-root, volatile-path
+  and `~` items are now delivered.
+
 ## 5. Interruption test matrix
 
 All tests use temporary Git repositories, as existing lifecycle tests do,
@@ -375,7 +392,10 @@ and an injected clock; none sleeps or uses the network.
 | Manual / no-runtime operation | `TestManualJobNeverAutoMarkedLost` + existing lifecycle tests | REL-07 |
 | Secret-free status, progress, notifications | `TestReliabilityOutputsContainNoSecrets` | REL-05/07 |
 | Volatile worktree rejected or recorded | `TestVolatileWorktreeRejectedUnlessOverridden` | REL-01 |
-| Legacy records readable | `TestLegacyPacketsLoadUnderNewStateModel` | REL-04 |
+| Legacy records readable | `TestEveryLegacyAndNewStateIsInterpreted`, `TestLegacyCancelledJobDescribesBranch` | REL-04 |
+| Recovery implies no approval or side effect | `TestRecoveryImpliesNoApprovalOrSideEffects` | REL-08 |
+| Cancelled job recovered with its snapshot | `TestRecoverCancelledJobRestoresSnapshot` | REL-08 |
+| Acceptance: no unexplained running jobs after `job check` | `TestNoUnexplainedRunningJobsAfterCheck` | REL-09 |
 
 ## 6. Checkpoints
 
