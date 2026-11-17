@@ -288,6 +288,10 @@ Control most needs:
   and a renumbered change plan, and a list of owner conventions held only in
   the intake revision log and in the owner's habits.
 
+*(Delivered after 0.3.0-rc.1 as `leadfox control brief`, `control handoff
+draft`, `control ack` and `control/conventions.yaml`. Not yet done:
+comparing pinned skill versions with the running binary in the briefing.)*
+
 ## 8. Work out of the box with sandboxed agent hosts such as Codex (high priority for adoption)
 
 **Priority.** High for adoption. A developer trying Leadfox with Codex meets

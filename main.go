@@ -20,6 +20,7 @@ Commands:
   doctor            Diagnose the current Leadfox project
   ops <operation>   Protect and inspect durable operations state
   context export    Export a compact, non-secret Control context
+  control <op>      Brief a new Control agent and record its takeover
   decision <op>     Record and inspect project decisions
   plan              Create an architecture plan from requirements
   gate run <name>   Execute a project gate and report evidence
@@ -135,6 +136,11 @@ func main() {
 		}
 	case "context":
 		if err := runContextCommand(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(1)
+		}
+	case "control":
+		if err := runControlCommand(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "Error:", err)
 			os.Exit(1)
 		}

@@ -108,6 +108,7 @@ leadfox project adopt PATH     Add missing structure to an existing project
 leadfox doctor                  Diagnose the current project
 leadfox ops <operation>         Protect and inspect durable operations state
 leadfox context export         Export compact Control context
+leadfox control brief           Brief a new Control agent on live work
 leadfox decision <operation>   Record or inspect decisions and approvals
 leadfox intake validate         Validate the living project intake
 leadfox change validate PATH    Validate a proposed project change
