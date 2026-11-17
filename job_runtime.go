@@ -117,6 +117,7 @@ type runtimeState struct {
 	SilentFor     string   `json:"silent_for,omitempty"`
 	Superseded    []string `json:"superseded_executions,omitempty"`
 	Late          int      `json:"late_events,omitempty"`
+	FromReplaced  int      `json:"replaced_execution_events,omitempty"`
 	Duplicates    int      `json:"duplicate_events,omitempty"`
 	Ignored       int      `json:"ignored_events,omitempty"`
 	lastEventTime time.Time
@@ -150,7 +151,11 @@ func deriveRuntimeState(events []runtimeEvent, now time.Time, thresholds runtime
 			continue
 		}
 		if event.Type == "register" {
-			if superseded[event.ExecutionID] || event.ExecutionID == state.ExecutionID {
+			if superseded[event.ExecutionID] {
+				state.FromReplaced++
+				continue
+			}
+			if event.ExecutionID == state.ExecutionID {
 				state.Late++
 				continue
 			}
@@ -159,13 +164,13 @@ func deriveRuntimeState(events []runtimeEvent, now time.Time, thresholds runtime
 				state.Superseded = append(state.Superseded, state.ExecutionID)
 			}
 			at, _ := time.Parse(time.RFC3339, event.At)
-			state = runtimeState{Condition: conditionHealthy, ExecutionID: event.ExecutionID, Runtime: event.Runtime, RegisteredAt: event.At, LastEventAt: event.At, LastEventType: "register", LastSeq: event.Seq, LastCommit: event.Commit, Superseded: state.Superseded, Late: state.Late, Duplicates: state.Duplicates, Ignored: state.Ignored, lastEventTime: at, lastEventID: event.EventID}
+			state = runtimeState{Condition: conditionHealthy, ExecutionID: event.ExecutionID, Runtime: event.Runtime, RegisteredAt: event.At, LastEventAt: event.At, LastEventType: "register", LastSeq: event.Seq, LastCommit: event.Commit, Superseded: state.Superseded, Late: state.Late, FromReplaced: state.FromReplaced, Duplicates: state.Duplicates, Ignored: state.Ignored, lastEventTime: at, lastEventID: event.EventID}
 			lastSeq[event.ExecutionID] = event.Seq
 			continue
 		}
 		if event.ExecutionID != state.ExecutionID {
 			if superseded[event.ExecutionID] {
-				state.Late++
+				state.FromReplaced++
 			} else {
 				state.Ignored++
 			}
@@ -248,6 +253,42 @@ var executionIDPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,96}$`)
 // executionIDEnv lets a host or worker shell supply the execution ID once
 // instead of passing --execution-id to every command.
 const executionIDEnv = "LEADFOX_EXECUTION_ID"
+
+// executionStanding says whether an execution may still report for a job.
+// An execution is replaced when a later execution registered, and closed
+// when job check recorded an interruption (worker-lost or timed-out) for it.
+// A replaced or closed worker must stop: another worker, or Control, now
+// owns the job, and its reports no longer change the job's runtime state.
+func executionStanding(packet jobPacket, events []runtimeEvent, executionID string) (standing, detail string) {
+	registered, replacedBy := false, ""
+	for _, event := range events {
+		if event.Type != "register" {
+			continue
+		}
+		if event.ExecutionID == executionID {
+			registered, replacedBy = true, ""
+		} else if registered {
+			replacedBy = event.ExecutionID
+		}
+	}
+	switch {
+	case !registered:
+		return "unregistered", fmt.Sprintf("execution %s is not registered for %s", executionID, packet.ID)
+	case replacedBy != "":
+		return "replaced", fmt.Sprintf("execution %s for %s was replaced by execution %s", executionID, packet.ID, replacedBy)
+	}
+	for _, interruption := range packet.Interruptions {
+		if interruption.ExecutionID == executionID {
+			return "closed", fmt.Sprintf("execution %s for %s was closed when Control recorded %s at %s", executionID, packet.ID, interruption.State, interruption.RecordedAt)
+		}
+	}
+	return "current", ""
+}
+
+// stopReportingText tells a replaced or closed worker what to do.
+func stopReportingText(detail string) string {
+	return detail + "; stop working on this job, leave the worktree as it is, and tell Control (another worker may now own the job)"
+}
 
 func executionRegistered(events []runtimeEvent, executionID string) bool {
 	for _, existing := range events {
@@ -344,8 +385,16 @@ func jobRuntimeCommand(root, action, id string, o jobOptions) error {
 		if o.executionID == "" {
 			return fmt.Errorf("--execution-id (or %s) is required; register the execution first", executionIDEnv)
 		}
-		if !executionRegistered(events, o.executionID) {
-			return fmt.Errorf("execution %s is not registered for %s", o.executionID, id)
+		standing, detail := executionStanding(packet, events, o.executionID)
+		switch {
+		case standing == "unregistered":
+			return errors.New(detail)
+		case standing != "current" && (event.Type == "exit" || event.Type == "disconnect"):
+			// A host may still report that an old process ended; keep it as
+			// history. It does not change the job's runtime state.
+			fmt.Fprintf(os.Stderr, "note: %s; the %s event is recorded for history only\n", detail, event.Type)
+		case standing != "current":
+			return errors.New(stopReportingText(detail))
 		}
 		event.ExecutionID = o.executionID
 		event.Seq = o.seq
@@ -479,6 +528,9 @@ func describeRuntime(state runtimeState) string {
 	}
 	if state.Late > 0 || state.Duplicates > 0 || state.Ignored > 0 {
 		description += fmt.Sprintf("; %d late, %d duplicate, %d ignored event(s)", state.Late, state.Duplicates, state.Ignored)
+	}
+	if state.FromReplaced > 0 {
+		description += fmt.Sprintf("; %d event(s) from replaced executions ignored", state.FromReplaced)
 	}
 	return description
 }

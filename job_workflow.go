@@ -198,13 +198,22 @@ func buildJobStatus(root string, packet jobPacket) jobStatusReport {
 		report.Meaning += fmt.Sprintf(" — %s by %s at %s", last.Reason, last.Actor, last.RecordedAt)
 	}
 	report.Warnings = worktreeWarnings(packet)
+	worktreeMissing := false
+	if packet.Worktree != "" && isStartedJobStatus(packet.Status) && !isTerminalJobStatus(packet.Status) {
+		if _, err := os.Stat(packet.Worktree); errors.Is(err, os.ErrNotExist) {
+			worktreeMissing = true
+			report.Meaning = strings.Replace(report.Meaning, "; worktree kept", "; worktree missing", 1)
+		}
+	}
 	report.Activity = buildJobActivity(root, packet)
+	var assessment *jobAssessment
 	if isStartedJobStatus(packet.Status) && !isTerminalJobStatus(packet.Status) {
-		if assessment, err := assessJob(root, packet, nowFunc()); err != nil {
+		if assessed, err := assessJob(root, packet, nowFunc()); err != nil {
 			report.Warnings = append(report.Warnings, "runtime assessment unavailable: "+err.Error())
 		} else {
-			report.Runtime = &assessment.Runtime
-			if text := assessment.attentionText(); text != "" {
+			assessment = &assessed
+			report.Runtime = &assessed.Runtime
+			if text := assessed.attentionText(); text != "" {
 				report.Warnings = append(report.Warnings, text)
 			}
 		}
@@ -219,6 +228,22 @@ func buildJobStatus(root string, packet jobPacket) jobStatusReport {
 	report.NextAction = nextJobAction(packet, report.Blockers)
 	if report.Interruption != nil {
 		report.NextAction = report.Interruption.RecoveryAction
+	}
+	if packet.Status == stateRunning && assessment != nil {
+		switch {
+		case assessment.Transition != "":
+			report.NextAction = fmt.Sprintf("record the interruption with leadfox job check %s, then recover or reissue", packet.ID)
+		case assessment.Runtime.Condition == conditionStale:
+			report.NextAction = fmt.Sprintf("check on the worker (silent for %s); leadfox job check %s records worker-lost after %s of silence", assessment.Runtime.SilentFor, packet.ID, assessment.Thresholds.LostAfter)
+		}
+	}
+	if worktreeMissing {
+		recover := fmt.Sprintf("leadfox job recover %s --actor NAME --reason TEXT", packet.ID)
+		if packet.Status == stateRunning {
+			report.NextAction = fmt.Sprintf("the worktree is missing; pause the job, then restore it with %s and resume", recover)
+		} else {
+			report.NextAction = fmt.Sprintf("the worktree is missing; restore it with %s, then resume", recover)
+		}
 	}
 	if packet.Status == "cancelled" && report.Recovery != "" {
 		if packet.SupersededBy != "" {

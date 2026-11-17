@@ -83,6 +83,10 @@ they write only to the Control checkout's uncommitted runtime journal.
 
    Control's next `job check` marks the job worker-lost; your branch and
    uncommitted work are preserved.
+6. **If Leadfox says your execution was replaced or closed**, stop
+   working on the job at once. Control has recorded your worker as lost or
+   given the job to another worker. Do not commit, edit the worktree or
+   retry the command; tell Control what you were doing instead.
 
 Never put credentials, tokens or raw command output in progress text or
 notes; Leadfox refuses text that looks like a credential. Reference logs with

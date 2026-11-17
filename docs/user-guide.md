@@ -648,6 +648,12 @@ leadfox job runtime event JOB-001 --execution-id run-42 --type exit --exit-code 
 leadfox job runtime show JOB-001
 ```
 
+Once `job check` records an execution as worker-lost or timed-out, or a
+new execution registers, the old execution may no longer report: its
+heartbeats, events and progress are refused with an instruction to stop
+and tell Control, so a worker that returns cannot keep editing beside its
+replacement. Exit and disconnect events are still accepted as history.
+
 `runtime show` lists runtime events and notifications. It counts progress
 updates without listing them; `job progress <id> --show` lists those. For a
 merged or cancelled job it reports the last execution as ended instead of a
