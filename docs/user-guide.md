@@ -411,11 +411,26 @@ pin references, and marks it ready. The lifecycle is:
 draft -> ready -> running -> review-pending/review -> accepted -> merged
 ```
 
-Start work in an isolated worktree:
+Start work in an isolated worktree outside the Control checkout, in a
+persistent folder rather than a temporary directory: macOS and many Linux
+systems clear `/tmp` on reboot or after a few days, which can remove the
+worktree of a running job. `leadfox init` configures a persistent root in
+`control/settings/worktrees.yaml` (by default `../<project>-jobs`).
+`job start` uses the packet's `worktree:` field, then `--worktree`, then
+`<root>/<job-id>`. `~` is expanded, and temporary locations such as `/tmp`
+are refused unless the project permits a recorded override (see "Job
+reliability and recovery" below).
 
 ```sh
-leadfox job start JOB-001 --worktree /tmp/project-job-001
+leadfox job start JOB-001
+# or an explicit persistent path
+leadfox job start JOB-001 --worktree ~/project-jobs/JOB-001
 ```
+
+Leadfox removes a job's worktrees when the job is merged or cancelled, after
+saving any uncommitted work under `refs/leadfox/recovery/`; paused and
+blocked jobs keep their worktree for resume. Job branches and recovery refs
+are never deleted. The parent folder can be removed when the project ends.
 
 Projects may declare safe, repeatable worktree setup in
 `control/worktree.yaml`:
@@ -733,6 +748,58 @@ systems, and cloud resources should be represented in the project controls so
 they can be reproduced and gated. External actions—such as creating a remote,
 pushing, applying Terraform, creating secrets, or changing IAM—require the
 authority specified by the decision policy.
+
+## Agent host requirements
+
+Leadfox writes to Git on Control's behalf. These commands create branches,
+worktrees, merges or record commits:
+
+- `job start`, `job review`, `job approve`, `job merge`;
+- `job attest`, `job evidence`, `job sync`, `job block`, `job pause`,
+  `job resume`, `job cancel`, `job reissue`, `job recover`, `job check`.
+
+The agent host running Control therefore needs:
+
+1. write access to the project's `.git` directory;
+2. write access to the worktree folder outside the checkout;
+3. for gates that start containers or contact local services, access to
+   Docker and the local network, or a developer who runs those gates.
+
+Job agents need the same Git write access for their own commits in the job
+worktree, because a worktree's Git data lives in the main repository's
+`.git` directory.
+
+Read-only commands (`project status`, `context export`, `job status`,
+`job context`, `job readiness`, `job validate`, `job list`) work in any
+sandbox.
+
+`job progress` and `job runtime` do not write to Git, but they append to
+the uncommitted journal in the Control checkout's `.local/leadfox/runtime/`
+folder, even when run from a job worktree. A worker sandboxed to its own
+worktree needs write access to that folder, or Control or the host must
+report progress and runtime events for it.
+
+> **Warning: Codex is not currently recommended as a Control agent.**
+> Codex's default `workspace-write` sandbox keeps `.git` read-only and allows
+> writes outside the project only in temporary directories and folders added
+> with `--add-dir`. Under that sandbox:
+>
+> - a new project's baseline commit cannot be created;
+> - `job start` fails with `cannot lock ref 'refs/heads/job/...'`;
+> - every lifecycle step and every commit needs a developer approval
+>   (`--ask-for-approval on-request`) or must be run by the developer.
+>
+> The developer ends up monitoring every job, which is contrary to Leadfox's
+> purpose. Running Codex with `--sandbox danger-full-access` removes the
+> approvals but also removes the sandbox for everything Control does. Until
+> Leadfox provides a host readiness check and host profiles (backlog item 8),
+> use a Control host that can write to `.git`, or accept that the developer
+> runs the Git and `leadfox job` lifecycle commands.
+
+Record the project's choices in its decision policy or intake: who makes
+local and lifecycle commits, the worktree folder, and who runs gates that
+need Docker or the network. A project then keeps working when its Control
+agent or host changes.
 
 ## 12. Troubleshooting
 

@@ -29,6 +29,24 @@ cd demo
 Then start the project’s planning agent. The generated `AGENTS.md` explains
 the project structure and the agent-led planning workflow.
 
+## Agent host requirements
+
+Control runs Leadfox commands that write to Git: `job start` creates a branch
+and a worktree, and review, approval, merge and other lifecycle steps commit
+records. The agent host running Control must therefore be able to write to
+the project's `.git` directory and to a worktree folder outside the project
+checkout.
+
+> **Warning: Codex is not currently recommended as a Control agent.** Codex's
+> default `workspace-write` sandbox keeps `.git` read-only, so every
+> lifecycle step (`job start`, `review`, `approve`, `merge`, and each commit)
+> needs a developer approval or must be run by the developer. In practice
+> this means monitoring every job, which defeats Leadfox's purpose. Running
+> Codex with full access removes the problem but also removes its sandbox.
+> Codex job agents meet the same restriction for their own commits. See
+> `docs/user-guide.md`, "Agent host requirements", and backlog item 8 in
+> `docs/backlog-field-lessons.md`.
+
 ## Core workflow
 
 1. `leadfox init` creates the project skeleton and project-owned policies.

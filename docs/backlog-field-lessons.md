@@ -225,3 +225,166 @@ platform, and signature data was sent. Lessons:
   at the user level as a second layer;
 - detect contact from tool cache files (for example a rewritten
   `~/.terraform.d/checkpoint_cache`).
+
+## 7. Onboard a new Control agent with a takeover briefing (nice to have)
+
+**Priority.** Nice to have. Control can already be handed over by pointing a
+new agent at `AGENTS.md`, `leadfox context export` and the control files;
+this item makes the handover faster, more consistent, and checkable.
+
+**Problem.** A project changed its Control agent mid-stream. Everything
+Control needs is in the repository, but a new agent had to be told by hand
+what to read, in what order, and what was in flight. `leadfox context
+export` lists every decision (metadata only) and every job as a flat list;
+on a mature project (170+ decisions, 58 jobs, five change plans) that is
+long, puts merged history next to live work, and omits the things a new
+Control most needs:
+- which change plans are active, held, or complete, and their hold points;
+- which jobs are not merged, and what each needs next;
+- which owner decisions are still open or deferred;
+- recent intake revisions (the running story of the project);
+- standing owner conventions that are not decisions (for example naming
+  rules, manual-only test systems, wording rules for plan documents);
+- notes from the outgoing Control (unrecorded verbal decisions,
+  half-finished work, questions waiting on the owner).
+
+**Proposed capability:**
+- **`leadfox control brief [PATH] [--format markdown|json]`** (or
+  `context export --onboard`): a read-only takeover briefing containing:
+  - project, structure, intake and policy validity, and pinned Leadfox and
+    skill versions compared with the running binary;
+  - a reading order derived from the project (instructions, decision policy,
+    roles, intake revision log, project model and architecture plan, change
+    plans with workflow files, decision ledger, latest handoffs, gates, risk
+    controls, contracts);
+  - live work only: active and held change plans with hold points; jobs not
+    merged or cancelled, each with `job status` blockers and next action;
+    open or deferred decisions; latest gate failures and missing evidence;
+  - the last N intake revision-log entries;
+  - the latest Control handoff, if any;
+  - merged history summarized as counts, with a pointer to the full export.
+- **Owner conventions:** an optional `control/conventions.yaml` (or an intake
+  section) for standing rules that are not decisions, included verbatim in
+  the briefing.
+- **Control handoff record:** `leadfox control handoff draft` creates
+  `control/handoffs/CONTROL-<date>.md` from a template (in-flight work,
+  unrecorded owner decisions, open questions, known inconsistencies) for the
+  outgoing Control or the developer to complete; it refuses to overwrite.
+- **Understanding check:** the briefing ends with a fixed first task for the
+  new Control: report current phase, active and held change plans, every
+  non-merged job, open owner decisions, gate gaps, and inconsistencies
+  between intake, decisions, change plans and jobs, then stop. Optionally
+  `leadfox control ack --by NAME` records the developer's acceptance of that
+  report in the decision ledger (action `agent_assignment`), so the start of
+  a Control's tenure is auditable.
+- **Boundary:** the briefing and handoff are guidance and records; they
+  grant no authority. The decision policy still governs what the new Control
+  may do.
+
+**Observed:**
+- sapient-lms, 2026-11-13: the owner asked how to start a new Control agent
+  on the existing project. The project validated cleanly, but the takeover
+  needed a hand-written reading list, a manual note about three draft jobs
+  and a renumbered change plan, and a list of owner conventions held only in
+  the intake revision log and in the owner's habits.
+
+## 8. Work out of the box with sandboxed agent hosts such as Codex (high priority for adoption)
+
+**Priority.** High for adoption. A developer trying Leadfox with Codex meets
+several unexplained failures before the first job runs, and is likely to give
+up. Each failure is correct behaviour by Leadfox or by the host's sandbox;
+the problem is that nothing tells the developer what is wrong or how to set
+the host up.
+
+**Problem.** Codex's default `workspace-write` sandbox lets the agent write
+inside the project but keeps `.git` read-only, blocks writes outside the
+project except temporary directories, and blocks network access unless
+enabled. Leadfox, run by Control inside that sandbox, needs exactly those
+things:
+- **Baseline commit.** A newly initialized project has `git init` but no
+  commit, and every file is untracked. `job start` refuses ("Control
+  worktree is not clean"); Codex cannot create the first commit because
+  `.git` is read-only, and reports only that the commit "cannot be created
+  in this environment".
+- **Lifecycle commits and worktrees.** `job start` runs `git worktree add`
+  and commits a start record; review, merge and evidence steps also commit.
+  All write to `.git`.
+- **Worktree location.** Leadfox correctly requires job worktrees outside
+  the Control checkout. With no configured location, Codex picked
+  `/private/tmp` because the sandbox allows it. macOS clears that directory
+  on reboot and after a few days without access, so a long-running job can
+  lose its worktree and leave stale `.git/worktrees/` entries.
+- **Integration gates.** Gates that start Docker Compose stacks or reach
+  local services need network or Docker-socket access the sandbox denies.
+- A project run by a different host (sapient-lms, run by Claude) never hit
+  these issues, because that host could write to `.git` and the project
+  used a persistent sibling folder (`~/sapient-lms-jobs/<job>`) by
+  convention. Nothing in that project records either rule, so switching it
+  to Codex would reproduce every failure except the baseline commit.
+
+**Proposed capability:**
+- **Baseline at init.** `leadfox init` offers to create the baseline commit
+  (default yes, with a reviewed file list and a generated `.gitignore` that
+  includes `.DS_Store` and local-state folders), so a project never starts
+  without one. `project check` reports "no commits" and "untracked control
+  files" as explicit findings with the exact command to fix them.
+- **Configured worktree root.** A project setting (for example
+  `control/settings/worktrees.yaml: root: ../<project>-jobs`) that
+  `job start` uses by default, resolved outside the checkout and refusing
+  known-volatile locations (`/tmp`, `/private/tmp`, `/var/folders`) unless
+  explicitly overridden. The job packet records the resolved path.
+  *(Delivered in job reliability R0: `control/settings/worktrees.yaml`,
+  volatile-path refusal with a recorded override; see the user guide,
+  "Job reliability and recovery".)*
+- **Host readiness check.** `leadfox doctor --host` (or `capability check
+  host`) probes, without changing anything, whether the current process can:
+  write to `.git` (create and remove a test ref in a scratch namespace),
+  write to the worktree root, run `git worktree add` on a throwaway branch
+  and remove it, reach the Docker socket, and open network connections when
+  a gate needs them. It prints a pass/fail table and, for each failure, the
+  host-specific remedy.
+- **Host profiles in the documentation.** A short setup page per supported
+  host. For Codex: run with `--sandbox workspace-write --ask-for-approval
+  on-request`; add the worktree root with `--add-dir` or
+  `sandbox_workspace_write.writable_roots`; approve git and `leadfox job`
+  lifecycle commands per command, or let the developer run them; decide who
+  runs Docker-based gates. Equivalent notes for Claude Code's sandbox.
+- **Clear errors.** When a Leadfox git operation fails with a permission
+  error, name the likely cause ("the agent host is not allowed to write to
+  `.git`") and point to the host profile, instead of surfacing only Git's
+  message.
+- **Policy template.** The generated `control/decision-policy.yaml` and
+  intake include explicit entries for local commits and lifecycle commits,
+  the worktree root, and who runs network or Docker gates, so a project
+  states these rules rather than inheriting them from whichever host ran it
+  first.
+- **Takeover link.** The Control takeover briefing (item 7) includes the
+  host readiness result, so a new Control on a different host learns of
+  these limits before its first job.
+- **Paths.** Expand `~` in `worktree:` packet fields and `--worktree`, or
+  refuse it with a clear message. Today `~/x` resolves inside the checkout
+  and is rejected as "inside the Control checkout", which is confusing.
+  *(Delivered in job reliability R0: `~` and `~/…` are expanded in packet
+  paths, `--worktree` and the configured root.)*
+- **Documentation example.** The user guide's `job start` example used
+  `/tmp/project-job-001`, which steered a Codex Control to `/private/tmp`.
+  (Corrected in the user guide; keep examples on a persistent folder.)
+- **Interim warning (done, documentation only).** README and user guide now
+  warn that Codex is not currently recommended as a Control agent, because
+  the number of approvals forces the developer to monitor every job. Remove
+  the warning when the host profile and readiness check make Codex usable
+  without per-step approvals. A runtime warning (for example when
+  `project check` or `job start` detects a read-only `.git`) is a follow-up.
+
+**Observed:**
+- paper-crane, 2026-11-13/14, Control on Codex: `job start` refused an
+  untracked, commit-less checkout; Codex could not create the baseline
+  commit; after the developer committed it by hand, Codex chose
+  `/private/tmp` for the first job worktree; a packet path written with `~`
+  was rejected; Control's own edits left the checkout unclean; with the path
+  fixed, `job start` failed with `cannot lock ref 'refs/heads/job/job-001'`.
+  The developer concluded that the approvals required make Codex unsuitable
+  as Control for now.
+- sapient-lms: the same project under Codex would need `.git` approvals,
+  an added writable folder for `~/sapient-lms-jobs`, and a decision on who
+  runs its Docker-based integration gates.
