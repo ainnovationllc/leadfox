@@ -35,7 +35,7 @@ func TestProjectMigrationIsIdempotentAndPreservesExistingFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := applyProjectMigration(root, report)
+	created, _, err := applyProjectMigration(root, report)
 	if err != nil {
 		t.Fatal(err)
 	}
