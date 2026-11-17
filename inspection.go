@@ -145,6 +145,15 @@ func inspectJobReadiness(root string, packet jobPacket) jobInspectionReport {
 	if err := validateJobRisks(root, packet.RiskControls); err != nil {
 		add("risk", err.Error())
 	}
+	if settings, err := loadWorktreeSettings(root); err != nil {
+		add("worktree", err.Error())
+	} else if packet.Worktree != "" || settings.present {
+		if worktree, resolveErr := resolveJobWorktreePath(root, packet.ID, packet.Worktree, "", settings); resolveErr != nil {
+			add("worktree", resolveErr.Error())
+		} else if location, volatile := volatileWorktreeLocation(worktree); volatile {
+			add("worktree", fmt.Sprintf("job worktree %s is in volatile location %s", worktree, location))
+		}
+	}
 	return report
 }
 

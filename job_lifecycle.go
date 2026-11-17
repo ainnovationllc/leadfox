@@ -30,12 +30,12 @@ Usage:
   leadfox job scope add <id> [options]
   leadfox job handoff draft <id>
   leadfox job sync <id> [--actor NAME] [--reason TEXT]
-  leadfox job reissue <old-id> <new-id> [--reason TEXT]
+  leadfox job reissue <old-id> <new-id> --actor NAME --reason TEXT [--from-branch | --from-recovery REF|latest]
   leadfox job review <id> [options]
   leadfox job approve <id> --verdict accepted|changes-requested
   leadfox job attest <id> --check GATE/CHECK --result passed [--note TEXT]
   leadfox job evidence <id> --criterion ID --provider NAME --run-id ID --commit SHA --conclusion success|failure [options]
-  leadfox job cancel <id> --reason TEXT
+  leadfox job cancel <id> --reason TEXT [--discard-uncommitted]
   leadfox job block <id> --reason TEXT
   leadfox job resume <id> [--reason TEXT]
   leadfox job list
@@ -75,11 +75,22 @@ Options:
       --artifact REF      Artifact reference (repeatable)
       --artifact-id ID    Declared durable artifact to retain
       --diagnostic        Record evidence without satisfying the criterion
+      --allow-volatile-worktree
+                          Start in a volatile location (requires project permission and --reason)
+      --discard-uncommitted
+                          Cancel without snapshotting uncommitted worktree changes
+      --from-branch       Reissue starting from the superseded job's branch head
+      --from-recovery REF Reissue starting from a recorded recovery point (or "latest")
       --format FORMAT     Markdown or JSON output where supported
   -h, --help              Show this help message
 
 Review creates a clean detached worktree, resolves commits to full IDs,
 checks scope, runs required gates, and records evidence before approval.
+
+Job start uses the packet's worktree, --worktree, or the persistent root in
+control/settings/worktrees.yaml. Volatile locations such as /tmp are refused.
+Cancel and reissue snapshot uncommitted work to refs/leadfox/recovery/<id>/<n>
+before removing a worktree; Leadfox never deletes job branches or recovery refs.
 `
 
 const evidenceSchemaVersion = 2
@@ -95,6 +106,8 @@ type jobPacket struct {
 	BranchStartCommit  string                `yaml:"branch_start_commit,omitempty"`
 	ScopeBaseCommit    string                `yaml:"scope_base_commit,omitempty"`
 	Worktree           string                `yaml:"worktree,omitempty"`
+	WorktreeOverride   *jobWorktreeOverride  `yaml:"worktree_override,omitempty"`
+	StartPoint         *jobStartPoint        `yaml:"start_point,omitempty"`
 	ReviewCommit       string                `yaml:"review_commit,omitempty"`
 	ReviewWorktree     string                `yaml:"review_worktree,omitempty"`
 	ReviewWorktrees    []string              `yaml:"review_worktrees,omitempty"`
@@ -128,6 +141,7 @@ type jobPacket struct {
 	ResumeAt           string                `yaml:"resume_at,omitempty"`
 	Supersedes         string                `yaml:"supersedes,omitempty"`
 	SupersededBy       string                `yaml:"superseded_by,omitempty"`
+	RecoveryPoints     []jobRecoveryPoint    `yaml:"recovery_points,omitempty"`
 	ScopeAmendments    []jobScopeAmendment   `yaml:"scope_amendments,omitempty"`
 	ChangePlan         string                `yaml:"change_plan,omitempty"`
 	HoldPoint          string                `yaml:"hold_point,omitempty"`
@@ -295,6 +309,8 @@ type jobOptions struct {
 	attempt                                                  int
 	repeat                                                   int
 	diagnostic                                               bool
+	allowVolatile, discardUncommitted, fromBranch            bool
+	fromRecovery                                             string
 	artifacts                                                []string
 	allow, exclude, gates, setup, capabilities, risks        []string
 	showHelp                                                 bool
@@ -669,6 +685,22 @@ func parseJobOptions(args []string) (jobOptions, string, error) {
 		case "--diagnostic":
 			o.used["diagnostic"] = true
 			o.diagnostic = true
+		case "--allow-volatile-worktree":
+			o.used["allow-volatile-worktree"] = true
+			o.allowVolatile = true
+		case "--discard-uncommitted":
+			o.used["discard-uncommitted"] = true
+			o.discardUncommitted = true
+		case "--from-branch":
+			o.used["from-branch"] = true
+			o.fromBranch = true
+		case "--from-recovery":
+			o.used["from-recovery"] = true
+			v, n, e := requiredOptionValue(args, i, arg)
+			if e != nil {
+				return o, id, e
+			}
+			o.fromRecovery, i = v, n
 		case "--format":
 			o.used["format"] = true
 			v, n, e := requiredOptionValue(args, i, arg)
@@ -740,7 +772,7 @@ func parseJobOptions(args []string) (jobOptions, string, error) {
 func validateJobOptions(operation string, o jobOptions) error {
 	allowed := map[string]map[string]bool{
 		"new":       {"base": true, "worktree": true, "branch": true, "role": true, "objective": true, "template": true, "like": true, "allow": true, "exclude": true, "gate": true, "setup": true, "capability": true, "risk": true},
-		"start":     {"base": true, "worktree": true, "branch": true},
+		"start":     {"base": true, "worktree": true, "branch": true, "allow-volatile-worktree": true, "reason": true, "actor": true},
 		"scope":     {"worktree": true, "commit": true},
 		"scope-add": {"allow": true, "exclude": true, "gate": true, "reason": true, "actor": true},
 		"sync":      {"actor": true, "reason": true},
@@ -748,10 +780,10 @@ func validateJobOptions(operation string, o jobOptions) error {
 		"approve":   {"verdict": true, "approved-by": true, "note": true},
 		"attest":    {"check": true, "result": true, "approved-by": true, "note": true},
 		"evidence":  {"criterion": true, "provider": true, "run-id": true, "attempt": true, "commit": true, "conclusion": true, "evidence-url": true, "artifact": true, "diagnostic": true, "actor": true},
-		"cancel":    {"reason": true, "actor": true, "approved-by": true},
+		"cancel":    {"reason": true, "actor": true, "approved-by": true, "discard-uncommitted": true},
 		"block":     {"reason": true, "actor": true, "approved-by": true},
 		"resume":    {"reason": true, "actor": true},
-		"reissue":   {"reason": true, "actor": true},
+		"reissue":   {"reason": true, "actor": true, "discard-uncommitted": true, "from-branch": true, "from-recovery": true},
 		"list":      {},
 		"merge":     {},
 		"retain":    {"artifact-id": true, "actor": true},
@@ -961,19 +993,31 @@ func jobStart(root, id string, o jobOptions) error {
 	if branch == "" {
 		branch = "job/" + strings.ToLower(id)
 	}
-	worktree := packet.Worktree
-	if worktree == "" {
-		worktree = o.worktree
+	settings, err := loadWorktreeSettings(root)
+	if err != nil {
+		return err
 	}
-	if worktree == "" {
-		return errors.New("a worktree path is required")
-	}
-	worktree, err = filepath.Abs(worktree)
+	worktree, err := resolveJobWorktreePath(root, id, packet.Worktree, o.worktree, settings)
 	if err != nil {
 		return err
 	}
 	if err := ensureExternalWorktree(root, worktree); err != nil {
 		return err
+	}
+	actor := o.actor
+	if actor == "" {
+		actor = "Control"
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	override, err := checkJobWorktreeLocation(worktree, settings, o.allowVolatile, o.reason, actor, now)
+	if err != nil {
+		return err
+	}
+	if o.reason != "" && !o.allowVolatile {
+		return errors.New("job start accepts --reason only with --allow-volatile-worktree")
+	}
+	if err := os.MkdirAll(filepath.Dir(worktree), 0o755); err != nil {
+		return fmt.Errorf("create worktree parent: %w", err)
 	}
 	if _, err := os.Stat(worktree); err == nil {
 		return fmt.Errorf("job worktree already exists: %s", worktree)
@@ -985,16 +1029,33 @@ func jobStart(root, id string, o jobOptions) error {
 		return fmt.Errorf("resolve base: %w", err)
 	}
 	baseCommit = strings.TrimSpace(baseCommit)
-	if _, err := gitOutput(root, "worktree", "add", "-b", branch, worktree, baseCommit); err != nil {
+	branchStart := baseCommit
+	if packet.StartPoint != nil {
+		// A reissued job continues from preserved work. Verify that the
+		// recorded ref still identifies the recorded commit before using it.
+		resolved, resolveErr := resolveCommit(root, packet.StartPoint.Ref)
+		if resolveErr != nil {
+			return fmt.Errorf("resolve start point %s: %w", packet.StartPoint.Ref, resolveErr)
+		}
+		if packet.StartPoint.Commit != "" && resolved != packet.StartPoint.Commit {
+			return fmt.Errorf("start point %s moved from %s to %s; reissue again from the intended recovery point", packet.StartPoint.Ref, packet.StartPoint.Commit, resolved)
+		}
+		branchStart = resolved
+	}
+	if _, err := gitOutput(root, "worktree", "add", "-b", branch, worktree, branchStart); err != nil {
 		return fmt.Errorf("create job worktree: %w", err)
 	}
 	if err := applyWorktreeEnvironment(root, worktree); err != nil {
 		_, _ = gitOutput(root, "worktree", "remove", "--force", worktree)
 		return err
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
-	appendTransition(&packet, "running", "job started", "Control", now)
-	packet.Status, packet.BaseBranch, packet.BaseCommit, packet.Branch, packet.BranchStartCommit, packet.Worktree, packet.UpdatedAt = "running", base, baseCommit, branch, baseCommit, worktree, now
+	reason := "job started"
+	if override != nil {
+		reason = "job started in volatile worktree by override: " + override.Reason
+	}
+	appendTransition(&packet, "running", reason, actor, now)
+	packet.Status, packet.BaseBranch, packet.BaseCommit, packet.Branch, packet.BranchStartCommit, packet.Worktree, packet.UpdatedAt = "running", base, baseCommit, branch, branchStart, worktree, now
+	packet.WorktreeOverride = override
 	if err := writeJob(root, packet, body); err != nil {
 		return err
 	}
@@ -1005,11 +1066,38 @@ func jobStart(root, id string, o jobOptions) error {
 	if err != nil {
 		return fmt.Errorf("resolve start record: %w", err)
 	}
+	if packet.StartPoint != nil {
+		// The preserved work is not an ancestor of the start record, so bring
+		// the start record in with a merge, as job sync does. Scope is then
+		// measured from the start record, which contains the current base:
+		// the carried-over commits remain in the diff and are scope-checked,
+		// while base-branch changes are not counted against the job.
+		if _, err := gitOutput(worktree, "merge", "--no-ff", "--no-edit", startCommit); err != nil {
+			_, _ = gitOutput(worktree, "merge", "--abort")
+			return fmt.Errorf("job %s is recorded as running at %s, but merging the start record into the preserved work failed; resolve it in the worktree and run leadfox job sync: %w", id, worktree, err)
+		}
+		packet.ScopeBaseCommit = startCommit
+		packet.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		if err := writeJob(root, packet, body); err != nil {
+			return err
+		}
+		if err := commitLifecycleRecord(root, []string{jobPath(root, id)}, "Record start scope base "+id); err != nil {
+			return err
+		}
+		fmt.Printf("Started %s on %s at %s from %s (%s)\n", id, branch, worktree, packet.StartPoint.Ref, shortCommit(branchStart))
+		for _, warning := range worktreeWarnings(packet) {
+			fmt.Fprintln(os.Stderr, "warning:", warning)
+		}
+		return nil
+	}
 	// The branch was created at BaseCommit. Fast-forward it to the shared
 	// lifecycle commit so the job packet is clean and the start record is not
 	// duplicated when the branch is merged.
 	if _, err := gitOutput(worktree, "merge", "--ff-only", startCommit); err != nil {
 		return fmt.Errorf("advance job worktree to start record: %w", err)
+	}
+	for _, warning := range worktreeWarnings(packet) {
+		fmt.Fprintln(os.Stderr, "warning:", warning)
 	}
 	fmt.Printf("Started %s on %s at %s\n", id, branch, worktree)
 	return nil
@@ -2190,7 +2278,33 @@ func jobTerminate(root, id, status string, o jobOptions) error {
 	if actor == "" {
 		return errors.New("--actor is required for a lifecycle transition")
 	}
+	if o.discardUncommitted && status != "cancelled" {
+		return errors.New("--discard-uncommitted applies only to cancellation")
+	}
 	now := time.Now().UTC().Format(time.RFC3339)
+	var recovery *jobRecoveryPoint
+	if status == "cancelled" {
+		// Preserve work before anything is recorded or removed, so a failed
+		// snapshot leaves the job exactly as it was.
+		for _, path := range uniqueStrings(append([]string{packet.Worktree, packet.ReviewWorktree}, packet.ReviewWorktrees...)) {
+			if path == "" {
+				continue
+			}
+			if err := ensureCleanupPathAllowed(root, path); err != nil {
+				return err
+			}
+			if err := ensureNoActiveWorktreeResources(root, path); err != nil {
+				return err
+			}
+		}
+		recovery, err = preserveJobWork(root, packet, "cancelled: "+o.reason, actor, now, o.discardUncommitted)
+		if err != nil {
+			return err
+		}
+		if recovery != nil {
+			packet.RecoveryPoints = append(packet.RecoveryPoints, *recovery)
+		}
+	}
 	appendTransition(&packet, status, o.reason, actor, now)
 	packet.Status, packet.TerminalReason, packet.TerminalBy, packet.TerminalAt, packet.UpdatedAt = status, o.reason, actor, now, now
 	if err := writeJob(root, packet, body); err != nil {
@@ -2233,6 +2347,15 @@ func jobTerminate(root, id, status string, o jobOptions) error {
 		return err
 	}
 	fmt.Printf("Marked %s as %s and cleaned up worktrees\n", id, status)
+	if recovery != nil {
+		fmt.Printf("Recovery point: %s (%s) on branch %s\n", recovery.Ref, shortCommit(recovery.Commit), recovery.Branch)
+		if recovery.Snapshot {
+			fmt.Println("Uncommitted worktree changes were preserved in the recovery snapshot.")
+		}
+		if recovery.DiscardedUncommitted {
+			fmt.Println("Uncommitted worktree changes were discarded as requested.")
+		}
+	}
 	return nil
 }
 
@@ -2294,12 +2417,31 @@ func jobReissue(root, oldID, newID string, o jobOptions) error {
 	if o.reason == "" {
 		return errors.New("--reason is required for reissue")
 	}
+	if oldPacket.SupersededBy != "" {
+		return fmt.Errorf("job %s is already superseded by %s", oldID, oldPacket.SupersededBy)
+	}
+	// Validate the requested start point before cancelling anything, so an
+	// invalid request leaves the old job untouched. "latest" may refer to the
+	// recovery point that the cancellation below creates.
+	if o.fromRecovery == "latest" && oldPacket.Status != "cancelled" {
+		if oldPacket.Branch == "" {
+			return fmt.Errorf("job %s has no branch, so cancellation will not create a recovery point", oldID)
+		}
+	} else if _, err := resolveReissueStartPoint(root, oldPacket, o); err != nil {
+		return err
+	}
 	if oldPacket.Status != "cancelled" {
-		if err := jobTerminate(root, oldID, "cancelled", jobOptions{reason: "superseded by " + newID + ": " + o.reason, actor: o.actor}); err != nil {
+		if err := jobTerminate(root, oldID, "cancelled", jobOptions{reason: "superseded by " + newID + ": " + o.reason, actor: o.actor, discardUncommitted: o.discardUncommitted}); err != nil {
 			return err
 		}
+	} else if o.discardUncommitted {
+		return fmt.Errorf("job %s is already cancelled; --discard-uncommitted has no effect", oldID)
 	}
 	oldPacket, oldBody, err = readJob(root, oldID)
+	if err != nil {
+		return err
+	}
+	startPoint, err := resolveReissueStartPoint(root, oldPacket, o)
 	if err != nil {
 		return err
 	}
@@ -2323,6 +2465,9 @@ func jobReissue(root, oldID, newID string, o jobOptions) error {
 	newPacket.BranchStartCommit = ""
 	newPacket.ScopeBaseCommit = ""
 	newPacket.Worktree = ""
+	newPacket.WorktreeOverride = nil
+	newPacket.StartPoint = startPoint
+	newPacket.RecoveryPoints = nil
 	newPacket.ReviewCommit = ""
 	newPacket.ReviewWorktree = ""
 	newPacket.ReviewWorktrees = nil
@@ -2354,13 +2499,28 @@ func jobReissue(root, oldID, newID string, o jobOptions) error {
 	newPacket.UpdatedAt = now
 	newBody := strings.Replace(oldBody, "# "+oldID, "# "+newID, 1)
 	newBody += fmt.Sprintf("\n\n## Reissue\n\nSupersedes `%s`. Source packet and acceptance criteria were carried forward by Control; commits were not rewritten.\n", oldID)
+	if startPoint != nil {
+		newBody += fmt.Sprintf("\nStarts from preserved work at `%s` (`%s`).\n", startPoint.Ref, startPoint.Commit)
+	}
 	if err := writeJob(root, newPacket, newBody); err != nil {
 		return err
 	}
 	if err := commitLifecycleRecord(root, []string{jobPath(root, newID)}, "Create reissued job "+newID); err != nil {
 		return err
 	}
-	fmt.Printf("Reissued %s as %s\n", oldID, newID)
+	fmt.Printf("Reissued %s as %s; %s is cancelled and superseded\n", oldID, newID, oldID)
+	if point, ok := latestRecoveryPoint(oldPacket); ok {
+		fmt.Printf("Recovery point for %s: %s (%s)\n", oldID, point.Ref, shortCommit(point.Commit))
+	} else if description := recoveryDescription(root, oldPacket); description != "" {
+		fmt.Printf("Recovery for %s: %s\n", oldID, description)
+	} else {
+		fmt.Printf("%s had no branch; nothing to recover\n", oldID)
+	}
+	if startPoint != nil {
+		fmt.Printf("%s will start from %s (%s)\n", newID, startPoint.Ref, shortCommit(startPoint.Commit))
+	} else {
+		fmt.Printf("%s will start from its base branch; use --from-branch or --from-recovery to continue preserved work\n", newID)
+	}
 	return nil
 }
 
@@ -2418,6 +2578,22 @@ func jobMerge(root, id string) error {
 		return err
 	}
 	removedAt := time.Now().UTC().Format(time.RFC3339)
+	if packet.Worktree != "" {
+		if _, statErr := os.Stat(packet.Worktree); statErr == nil {
+			if clean, cleanErr := gitClean(packet.Worktree); cleanErr != nil || !clean {
+				// Uncommitted changes left after review are not part of the
+				// merge; keep them recoverable rather than removing them.
+				recovery, preserveErr := preserveJobWork(root, packet, "uncommitted changes at merge cleanup", lifecycleActor(), removedAt, false)
+				if preserveErr != nil {
+					return fmt.Errorf("merge succeeded but preserving uncommitted work failed; worktree left in place: %w", preserveErr)
+				}
+				if recovery != nil {
+					packet.RecoveryPoints = append(packet.RecoveryPoints, *recovery)
+					fmt.Printf("Uncommitted worktree changes preserved at %s (%s)\n", recovery.Ref, shortCommit(recovery.Commit))
+				}
+			}
+		}
+	}
 	for _, path := range uniqueStrings(append([]string{packet.Worktree, packet.ReviewWorktree}, packet.ReviewWorktrees...)) {
 		if path != "" {
 			if err := ensureCleanupPathAllowed(root, path); err != nil {

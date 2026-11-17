@@ -30,6 +30,8 @@ type jobStatusReport struct {
 	Artifacts     []jobStatusArtifact  `json:"durable_artifacts,omitempty"`
 	Amendments    int                  `json:"scope_amendments"`
 	Blockers      []string             `json:"blockers,omitempty"`
+	Warnings      []string             `json:"warnings,omitempty"`
+	Recovery      string               `json:"recovery,omitempty"`
 	NextAction    string               `json:"next_action"`
 	UpdatedAt     string               `json:"updated_at,omitempty"`
 }
@@ -99,6 +101,18 @@ func jobStatus(root, id, format string) error {
 			fmt.Printf("- %s: %s (%d evidence)\n", criterion.ID, criterion.Status, criterion.Evidence)
 		}
 	}
+	if report.Worktree != "" {
+		fmt.Printf("Worktree: %s\n", report.Worktree)
+	}
+	if report.Recovery != "" {
+		fmt.Println("Recovery:", report.Recovery)
+	}
+	if len(report.Warnings) > 0 {
+		fmt.Println("Warnings:")
+		for _, warning := range report.Warnings {
+			fmt.Println("-", warning)
+		}
+	}
 	if len(report.Blockers) > 0 {
 		fmt.Println("Blockers:")
 		for _, blocker := range report.Blockers {
@@ -162,7 +176,18 @@ func buildJobStatus(root string, packet jobPacket) jobStatusReport {
 			report.Blockers = append(report.Blockers, "required artifact "+artifact.ID+" is not retained")
 		}
 	}
+	report.Warnings = worktreeWarnings(packet)
+	if packet.Status == "cancelled" {
+		report.Recovery = recoveryDescription(root, packet)
+	}
 	report.NextAction = nextJobAction(packet, report.Blockers)
+	if packet.Status == "cancelled" && report.Recovery != "" {
+		if packet.SupersededBy != "" {
+			report.NextAction = "no further lifecycle action; superseded by " + packet.SupersededBy
+		} else {
+			report.NextAction = "cancelled, not completed; to continue the preserved work, reissue with --from-branch or --from-recovery"
+		}
+	}
 	return report
 }
 

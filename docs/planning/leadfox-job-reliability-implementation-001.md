@@ -226,9 +226,14 @@ names the recovery point and is distinct from `merged`.
 
 **REL-03 Reissue from preserved work.**
 `job reissue OLD NEW --from-branch` starts NEW from OLD's branch head (or a
-named recovery point with `--from-recovery REF`). NEW keeps OLD's original
-`scope_base_commit`, so the carried-over commits are scope-checked. Output
-names the superseded job and the recovery point.
+named recovery point with `--from-recovery REF|latest`). On start, the
+start record is merged into the preserved work and becomes NEW's
+`scope_base_commit`, exactly as `job sync` does. Scope is measured with a
+three-dot diff, so the carried-over commits (not on the base branch) are
+scope-checked while base-branch changes are not counted. (Corrected during
+implementation: keeping OLD's original scope base would have counted every
+intervening base-branch change as a violation.) Output names the superseded
+job and the recovery point.
 Files: `job_lifecycle.go` (`jobReissue`, `jobStart`), `job_recovery.go`.
 Tests: reissue from a branch with partial commits; scope check covers the
 carried-over commits; reissue without the flag keeps today's behaviour.
@@ -291,6 +296,17 @@ Fill any remaining rows of section 5, update `docs/user-guide.md` (job
 lifecycle, recovery, agent host requirements), `UPGRADE_PLAN.md` (new phase),
 `README.md` command list, and mark backlog item 8's worktree-root and `~`
 items as delivered.
+
+### R0 implementation notes
+
+- `project migrate` does not create `control/settings/worktrees.yaml`:
+  adding it to the managed-file list would mark every existing project as
+  `migration-required`, contrary to D9. `leadfox init` creates it, and
+  `project check` warns when it is missing.
+- Merge cleanup also snapshots uncommitted changes left in the job worktree
+  after review, so no cleanup path removes unpreserved work.
+- `job start` accepts `--actor` (default `Control`) so an override records
+  who approved it.
 
 ## 5. Interruption test matrix
 

@@ -593,6 +593,13 @@ secret_scanning:
   report_path: control/evidence/secret-scan.json
   allow_network: false
 `,
+		"control/settings/worktrees.yaml": fmt.Sprintf(`# Persistent location for job worktrees. Relative paths are resolved from
+# this checkout and must point outside it. Volatile locations such as /tmp
+# are refused; set allow_volatile: true only to permit a recorded override.
+schema_version: 1
+root: ../%s-jobs
+allow_volatile: false
+`, projectName),
 		"control/settings/README.md": `# Settings
 
 Environment-specific, non-secret settings belong here. Keep secrets as
