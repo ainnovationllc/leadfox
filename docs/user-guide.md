@@ -24,7 +24,28 @@ manager, or compliance certification service.
 
 ## 2. Installation and verification
 
-From the Leadfox repository:
+Install a published release into `~/.leadfox` with the bootstrap installer
+(Node.js 18 or later) from a Leadfox checkout. It downloads the release from
+GitHub, verifies its checksums, and keeps earlier releases for rollback:
+
+```sh
+node npm/leadfox.js install --version 0.3.0-rc.1 --yes
+node npm/leadfox.js path add --yes      # add ~/.leadfox/bin to PATH
+leadfox version
+node npm/leadfox.js doctor              # verify the installation
+node npm/leadfox.js update --yes --version VERSION
+node npm/leadfox.js update --rollback --yes
+```
+
+To remove the installation, preview and then confirm. Project directories
+and project-local skills are never removed:
+
+```sh
+leadfox uninstall --dry-run
+leadfox uninstall --yes
+```
+
+To build from source instead:
 
 ```sh
 make build
@@ -569,7 +590,7 @@ destination with the declared hash. The job packet records the actor,
 timestamp, source, and retained hash. Registered operations checkouts are also
 protected from job cleanup.
 
-## Job reliability and recovery
+## 10. Job reliability and recovery
 
 Leadfox keeps a started job from disappearing silently. These rules apply
 to every job, with or without an execution runtime.
@@ -717,7 +738,7 @@ pause, cancel and recovery readiness. Each names the project, job, event,
 state, latest commit, recovery action and whether owner attention is
 required. Reasons that look like credentials are withheld.
 
-## 9. Gates and evidence
+## 11. Gates and evidence
 
 Run a gate from the project root:
 
@@ -740,7 +761,7 @@ For every important job, retain:
 - manual attestations and their actor;
 - the Control review and approval record.
 
-## 10. Security and assurance
+## 12. Security and assurance
 
 Run the configured project scanner with:
 
@@ -753,7 +774,7 @@ Keep scanner versions and checksums in project pins. Findings should be fixed
 at the source. Exact fingerprints may be used only for reviewed, unchangeable
 historical false positives; broad history exclusions are unsafe.
 
-## 11. Audit evidence
+## 13. Audit evidence
 
 Leadfox records audit-relevant project history in project-controlled files:
 
@@ -779,7 +800,7 @@ leadfox assurance report --format json
 The assurance report identifies missing, present, verified, mismatched, and
 external evidence. It does not certify SOC 2 or replace an auditor.
 
-## 11. Git, environments, and deployment
+## 14. Git, environments, and deployment
 
 Jobs use branches and worktrees so agent changes remain isolated from the
 Control checkout and from one another. Control reviews and merges approved
@@ -791,7 +812,7 @@ they can be reproduced and gated. External actions—such as creating a remote,
 pushing, applying Terraform, creating secrets, or changing IAM—require the
 authority specified by the decision policy.
 
-## Agent host requirements
+## 15. Agent host requirements
 
 Leadfox writes to Git on Control's behalf. These commands create branches,
 worktrees, merges or record commits:
@@ -843,7 +864,7 @@ local and lifecycle commits, the worktree folder, and who runs gates that
 need Docker or the network. A project then keeps working when its Control
 agent or host changes.
 
-## 12. Troubleshooting
+## 16. Troubleshooting
 
 - If a job starts with the wrong base, cancel and reissue it rather than
   rewriting history.
@@ -856,7 +877,7 @@ agent or host changes.
 - If assurance hashes mismatch, re-review the changed evidence or update the
   mapping only through a normal Control change.
 
-## 13. Current boundaries
+## 17. Current boundaries
 
 Leadfox currently does not provide a universal agent launcher, MCP connection
 manager, cloud credential manager, GitHub App, branch-protection system, or

@@ -11,19 +11,25 @@ agent unrestricted authority.
 
 ## Quick start
 
-Build the CLI:
+Install a release into `~/.leadfox` (requires Node.js 18 or later; run from a
+Leadfox checkout). The installer verifies release checksums and keeps earlier
+releases for rollback:
 
 ```sh
-make build
+node npm/leadfox.js install --version 0.3.0-rc.1
+node npm/leadfox.js path add --yes
+leadfox version
 ```
+
+Or build from source with `make build` and run `./leadfox`.
 
 Create a project and inspect its policy:
 
 ```sh
-./leadfox init demo
+leadfox init demo
 cd demo
-../leadfox policy validate
-../leadfox policy show
+leadfox policy validate
+leadfox policy show
 ```
 
 Then start the project’s planning agent. The generated `AGENTS.md` explains
@@ -75,6 +81,21 @@ an MCP design server and remains responsible for authenticating to it.
 Assurance reports are evidence-coverage reports. They are not SOC 2
 certifications or auditor attestations.
 
+## Updating and uninstalling
+
+```sh
+node npm/leadfox.js update --yes --version VERSION   # verified update
+node npm/leadfox.js update --rollback                # previous release
+node npm/leadfox.js doctor                           # check the installation
+leadfox uninstall --dry-run                          # preview removal
+leadfox uninstall --yes                              # remove ~/.leadfox
+```
+
+Uninstall removes only verified, Leadfox-managed files. Project directories
+and project-local skills are never removed. After updating, run
+`leadfox project migrate` in each project to add or update Leadfox-managed
+documents.
+
 ## Main commands
 
 ```text
@@ -111,9 +132,11 @@ leadfox job check --all         Record worker loss and timeouts from runtime eve
 leadfox job recover JOB-ID      Recreate a lost worktree from the job branch
 leadfox capability <operation> Inspect agent-host capabilities
 leadfox policy <operation>     Validate or inspect Control authority policy
+leadfox risk <operation>       Validate or inspect project-defined risk controls
 leadfox assurance report       Report assurance evidence coverage
 leadfox security scan          Run configured secret scanning
 leadfox version                Show build information
+leadfox uninstall              Remove the user-local installation
 ```
 
 Use `leadfox --help` and the command-specific `--help` options for current
