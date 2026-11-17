@@ -428,7 +428,7 @@ func runJobCommand(args []string) error {
 			return err
 		}
 		if options.showHelp {
-			fmt.Println("Usage: leadfox job progress <id> [--remaining TEXT] [--next TEXT] [--blocker TEXT] [--gate ID]... [--actor NAME]\n       leadfox job progress <id> --show [--format markdown|json]")
+			fmt.Println("Usage: leadfox job progress <id> [--remaining TEXT] [--next TEXT] [--blocker TEXT] [--gate ID]... [--execution-id ID] [--actor NAME]\n       leadfox job progress <id> --show [--format markdown|json]\n\nWith --execution-id or LEADFOX_EXECUTION_ID, progress also counts as a heartbeat.")
 			return nil
 		}
 		if id == "" {
@@ -954,7 +954,7 @@ func validateJobOptions(operation string, o jobOptions) error {
 		"resume":    {"reason": true, "actor": true},
 		"pause":     {"reason": true, "actor": true},
 		"recover":   {"reason": true, "actor": true, "worktree": true, "allow-volatile-worktree": true},
-		"progress":  {"remaining": true, "next": true, "blocker": true, "gate": true, "actor": true, "show": true, "format": true},
+		"progress":  {"remaining": true, "next": true, "blocker": true, "gate": true, "actor": true, "show": true, "format": true, "execution-id": true},
 		"runtime":   {"runtime": true, "execution-id": true, "event-id": true, "type": true, "output-ref": true, "seq": true, "exit-code": true, "note": true, "actor": true, "format": true},
 		"check":     {"all": true},
 		"reissue":   {"reason": true, "actor": true, "discard-uncommitted": true, "from-branch": true, "from-recovery": true},
@@ -1107,7 +1107,7 @@ func jobNew(root, id string, o jobOptions) error {
 			packet.DurableArtifacts = append(packet.DurableArtifacts, artifact)
 		}
 	}
-	body := "# " + id + "\n\n## Objective\n\n" + o.objective + "\n\n## Agent instructions\n\nRead the approved project documentation before starting. Do not modify files outside the allowed paths. Return a handoff listing changed paths, checks run, results, assumptions, unresolved items, and the recommended next step.\n\n## Agent capabilities\n\nIf capabilities are listed in the packet, the agent host must provide them before work begins. Leadfox records the requirement but does not connect to providers or supply credentials. If a required capability is unavailable, stop and report it.\n\n## Risk controls\n\nIf risk controls are listed in the packet, read each declared control in control/risk-controls.yaml before starting. Treat its required evidence and stop conditions as mandatory review inputs. Leadfox validates the references but does not interpret project-specific risk rules.\n\n## Durable artifacts\n\nIf durable artifacts are declared in this packet, copy and hash them outside the disposable worktree with `leadfox job retain` before merge. Cleanup refuses to proceed until every required artifact is retained.\n\n## Git provenance\n\n`base_commit` and `branch_start_commit` identify the commit from which the job branch was created. The shared lifecycle start record is committed immediately afterward and is reachable from the job branch; its SHA is intentionally not stored inside that same commit because a commit cannot contain its own ID.\n\n## Acceptance\n\nSet the packet status to ready after Control has completed the job design.\n"
+	body := "# " + id + "\n\n## Objective\n\n" + o.objective + "\n\n## Agent instructions\n\nRead the approved project documentation before starting. Do not modify files outside the allowed paths. Return a handoff listing changed paths, checks run, results, assumptions, unresolved items, and the recommended next step.\n\n## Agent capabilities\n\nIf capabilities are listed in the packet, the agent host must provide them before work begins. Leadfox records the requirement but does not connect to providers or supply credentials. If a required capability is unavailable, stop and report it.\n\n## Risk controls\n\nIf risk controls are listed in the packet, read each declared control in control/risk-controls.yaml before starting. Treat its required evidence and stop conditions as mandatory review inputs. Leadfox validates the references but does not interpret project-specific risk rules.\n\n## Durable artifacts\n\nIf durable artifacts are declared in this packet, copy and hash them outside the disposable worktree with `leadfox job retain` before merge. Cleanup refuses to proceed until every required artifact is retained.\n\n## Git provenance\n\n`base_commit` and `branch_start_commit` identify the commit from which the job branch was created. The shared lifecycle start record is committed immediately afterward and is reachable from the job branch; its SHA is intentionally not stored inside that same commit because a commit cannot contain its own ID.\n\n## Acceptance\n\nSet the packet status to ready after Control has completed the job design.\n\n" + jobRuntimeReportingSection(id)
 	if err := writeJob(root, packet, body); err != nil {
 		return err
 	}

@@ -11,6 +11,9 @@ import (
 // useVolatileRoots.
 func TestMain(m *testing.M) {
 	volatileWorktreeRoots = func() []string { return nil }
+	// Tests set the execution ID explicitly; ignore any value from the
+	// developer's shell.
+	_ = os.Unsetenv(executionIDEnv)
 	os.Exit(m.Run())
 }
 

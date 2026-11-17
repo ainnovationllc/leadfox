@@ -139,7 +139,7 @@ func deriveRuntimeState(events []runtimeEvent, now time.Time, thresholds runtime
 			}
 			seen[event.EventID] = true
 		}
-		if event.Type == "notification" || event.Type == "progress" {
+		if event.Type == "notification" || (event.Type == "progress" && event.ExecutionID == "") {
 			continue
 		}
 		if event.ExecutionID == "" {
@@ -242,6 +242,31 @@ func jobExceededTimeout(packet jobPacket, now time.Time, thresholds runtimeThres
 
 var executionIDPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,96}$`)
 
+// executionIDEnv lets a host or worker shell supply the execution ID once
+// instead of passing --execution-id to every command.
+const executionIDEnv = "LEADFOX_EXECUTION_ID"
+
+func executionRegistered(events []runtimeEvent, executionID string) bool {
+	for _, existing := range events {
+		if existing.Type == "register" && existing.ExecutionID == executionID {
+			return true
+		}
+	}
+	return false
+}
+
+// nextExecutionSeq numbers events in arrival order for an execution when
+// the host does not supply its own sequence numbers.
+func nextExecutionSeq(events []runtimeEvent, executionID string) int64 {
+	next := int64(1)
+	for _, existing := range events {
+		if existing.ExecutionID == executionID && existing.Seq >= next {
+			next = existing.Seq + 1
+		}
+	}
+	return next
+}
+
 // jobRuntimeCommand implements job runtime register|heartbeat|event|show.
 func jobRuntimeCommand(root, action, id string, o jobOptions) error {
 	packet, _, err := readJob(root, id)
@@ -250,6 +275,9 @@ func jobRuntimeCommand(root, action, id string, o jobOptions) error {
 	}
 	if action == "show" {
 		return showJobRuntime(root, packet, o.format)
+	}
+	if o.executionID == "" {
+		o.executionID = strings.TrimSpace(os.Getenv(executionIDEnv))
 	}
 	if o.format != "" {
 		return errors.New("--format applies only to job runtime show")
@@ -311,30 +339,15 @@ func jobRuntimeCommand(root, action, id string, o jobOptions) error {
 			}
 		}
 		if o.executionID == "" {
-			return errors.New("--execution-id is required; register the execution first")
+			return fmt.Errorf("--execution-id (or %s) is required; register the execution first", executionIDEnv)
 		}
-		registered := false
-		for _, existing := range events {
-			if existing.Type == "register" && existing.ExecutionID == o.executionID {
-				registered = true
-			}
-		}
-		if !registered {
+		if !executionRegistered(events, o.executionID) {
 			return fmt.Errorf("execution %s is not registered for %s", o.executionID, id)
 		}
 		event.ExecutionID = o.executionID
 		event.Seq = o.seq
 		if event.Seq == 0 {
-			// Without a host-supplied sequence, number events in arrival
-			// order for this execution.
-			for _, existing := range events {
-				if existing.ExecutionID == o.executionID && existing.Seq >= event.Seq {
-					event.Seq = existing.Seq + 1
-				}
-			}
-			if event.Seq == 0 {
-				event.Seq = 1
-			}
+			event.Seq = nextExecutionSeq(events, o.executionID)
 		}
 		if event.Type == "exit" {
 			if !o.used["exit-code"] {
@@ -368,6 +381,7 @@ func jobRuntimeCommand(root, action, id string, o jobOptions) error {
 	switch event.Type {
 	case "register":
 		fmt.Printf("Registered execution %s (%s) for %s\n", event.ExecutionID, event.Runtime, id)
+		fmt.Printf("export %s=%s\n", executionIDEnv, event.ExecutionID)
 	default:
 		fmt.Printf("Recorded %s for %s execution %s (seq %d)\n", event.Type, id, event.ExecutionID, event.Seq)
 	}

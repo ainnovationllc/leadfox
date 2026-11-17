@@ -36,6 +36,8 @@ type jobContextReport struct {
 	RiskControls     []string `json:"risk_controls,omitempty"`
 	AcceptanceIDs    []string `json:"acceptance_criteria,omitempty"`
 	StopBeforeReview bool     `json:"stop_before_review"`
+	Reporting        []string `json:"reporting_commands"`
+	Protocol         string   `json:"reporting_protocol"`
 }
 
 func runJobInspection(operation string, args []string) error {
@@ -213,7 +215,7 @@ func jobContextFromPacket(packet jobPacket) jobContextReport {
 	for _, criterion := range packet.AcceptanceCriteria {
 		ids = append(ids, criterion.ID)
 	}
-	return jobContextReport{Job: packet.ID, Status: packet.Status, Role: packet.Role, Objective: packet.Objective, BaseBranch: packet.BaseBranch, AllowedPaths: packet.AllowedPaths, ExcludedPaths: packet.ExcludedPaths, Gates: packet.Gates, Capabilities: packet.Capabilities, RiskControls: packet.RiskControls, AcceptanceIDs: ids, StopBeforeReview: packet.Status != "approved" && packet.Status != "merged"}
+	return jobContextReport{Job: packet.ID, Status: packet.Status, Role: packet.Role, Objective: packet.Objective, BaseBranch: packet.BaseBranch, AllowedPaths: packet.AllowedPaths, ExcludedPaths: packet.ExcludedPaths, Gates: packet.Gates, Capabilities: packet.Capabilities, RiskControls: packet.RiskControls, AcceptanceIDs: ids, StopBeforeReview: packet.Status != "approved" && packet.Status != "merged", Reporting: jobReportingCommands(packet.ID), Protocol: agentRuntimeProtocolPath}
 }
 
 func printJobInspection(report jobInspectionReport, format string) error {
@@ -247,6 +249,10 @@ func printJobContext(report jobContextReport, format string) error {
 	}
 	fmt.Printf("# Job context: %s\n\nStatus: %s\nRole: %s\nObjective: %s\n", report.Job, report.Status, report.Role, report.Objective)
 	fmt.Printf("Allowed paths: %s\nExcluded paths: %s\nGates: %s\nCapabilities: %s\nRisk controls: %s\nAcceptance criteria: %s\nStop before review: %t\n", strings.Join(report.AllowedPaths, ", "), strings.Join(report.ExcludedPaths, ", "), strings.Join(report.Gates, ", "), strings.Join(report.Capabilities, ", "), strings.Join(report.RiskControls, ", "), strings.Join(report.AcceptanceIDs, ", "), report.StopBeforeReview)
+	fmt.Printf("Runtime reporting (%s):\n", report.Protocol)
+	for _, command := range report.Reporting {
+		fmt.Printf("  %s\n", command)
+	}
 	return nil
 }
 

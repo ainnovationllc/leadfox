@@ -377,6 +377,15 @@ Before implementation, reconcile the approved project model: service names,
 plan approval status, initial contracts, initial gates, environment settings,
 and secret references. Show the resulting change summary before writing code.
 Do not commit secrets or modify unrelated services.
+
+## Job execution and recovery
+
+Follow docs/agent-runtime.md. At the start of every Control session, run
+leadfox job check --all and leadfox job list, and resolve every interrupted
+or flagged job before starting new work. Job agents register their
+execution, report progress at each milestone, and report a handoff when
+done. Do not leave a job running without a live worker at the end of a
+session: pause or block it. Progress and handoffs are never approval.
 `,
 		"control/project.yaml": fmt.Sprintf(`project:
   name: %s
@@ -688,6 +697,7 @@ has been approved.
 Document service, data, and external-system contracts here. Contracts define
 interactions; they do not replace service implementations.
 `,
+		agentRuntimeProtocolPath: agentRuntimeProtocolDoc,
 		"docs/README.md": `# Documentation
 
 Record approved architecture and evolving development, environment, gate, and
@@ -771,7 +781,9 @@ Every delegated job should state:
 ## Handoff and review
 
 An agent returns the changed paths, tests and gates run, relevant output,
-assumptions, unresolved items, and a recommended next step. Control reviews
+assumptions, unresolved items, and a recommended next step. While working, it
+reports its execution, progress and handoff as described in
+docs/agent-runtime.md, so Control can tell a live job from a lost one. Control reviews
 the diff and artifacts, verifies that the work stayed within the job packet,
 and runs or delegates the applicable gates. A successful handoff is not an
 approval. Control explicitly accepts the result before assigning dependent
