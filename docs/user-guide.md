@@ -270,6 +270,51 @@ The planning sequence is:
 
 Do not treat a generated plan or an agent handoff as approval.
 
+### Changing the Control agent
+
+When a new agent takes over as Control, or Control restarts on a mature
+project, start it with a briefing instead of a hand-written reading list:
+
+```sh
+leadfox control brief                 # read-only; --format json for tools
+```
+
+The briefing shows project health, a reading order derived from the
+project, live jobs with their blockers and next actions, active and held
+change plans with open hold points, open (proposed or deferred) decisions,
+the latest intake change-history rows, owner conventions, the previous
+Control's handoff note, and merged history as counts. It ends with a fixed
+first task: report the project's state to the developer, then stop.
+
+Standing owner rules that are not decisions (naming rules, manual-only test
+systems, wording rules) go in `control/conventions.yaml`; the briefing
+includes them verbatim:
+
+```yaml
+version: 1
+conventions:
+  - id: service-naming
+    rule: Services are named after sled dogs.
+    source: owner, 2026-11-05
+```
+
+The outgoing Control (or the developer) drafts a handoff note, pre-filled
+with live work, and completes it; Leadfox never overwrites one:
+
+```sh
+leadfox control handoff draft         # control/handoffs/CONTROL-<date>.md
+```
+
+When the developer accepts the new Control's first report, record it; this
+adds an approved `agent_assignment` decision to the ledger:
+
+```sh
+leadfox control ack --by "Developer Name" --agent "Claude (Control)"
+```
+
+The briefing and handoff are guidance; they grant no authority. The
+decision policy still governs what Control may do.
+
 ## 5. Project controls
 
 The main project control files are:

@@ -7,6 +7,12 @@ never approval: Control still reviews, and the developer still approves.
 
 ## Control: every session
 
+0. **Taking over as a new Control.** Before anything else, run
+   `leadfox control brief`, read the files in its reading order, and do its
+   first task: report the project's state to the developer and stop. The
+   developer records acceptance with `leadfox control ack --by NAME`. When
+   you hand Control over, draft a note with
+   `leadfox control handoff draft` and complete it.
 1. **Start of session.** Run:
 
    ```sh

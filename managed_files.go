@@ -28,9 +28,10 @@ var updatableManagedFiles = []updatableManagedFile{
 	{
 		Path:    agentRuntimeProtocolPath,
 		Content: func() string { return agentRuntimeProtocolDoc },
-		Current: "e573c10410424e756e9f651858650621d1ae4ea6b71589b01bffda93ab97aa7f",
+		Current: "fe8bcfb7579b1b06642b1a38f6f94591148955aceaff7e246cd0506e9ccc2b99",
 		Previous: []string{
 			"621213d16fedbdbe939ddf058100f1a12b24020b62d229e326b82b8236cfaf6d", // initial protocol (cec78c8)
+			"e573c10410424e756e9f651858650621d1ae4ea6b71589b01bffda93ab97aa7f", // stop rule for replaced executions (dd27eb3)
 		},
 	},
 }
